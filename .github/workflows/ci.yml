@@ -16,8 +16,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ["3.9", "3.13"]
+        include:
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+          # Oldest supported interpreter. Kept on 22.04 because setup-python has
+          # no prebuilt 3.9 for the newer Ubuntu images and the action fails
+          # before any project step runs.
+          - os: ubuntu-22.04
+            python: "3.9"
+          - os: windows-latest
+            python: "3.9"
     steps:
       - uses: actions/checkout@v4
 

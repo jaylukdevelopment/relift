@@ -55,7 +55,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # 22.04 keeps the binary runnable on older glibc (2.35+); building on
+          # ubuntu-latest would raise the floor to the newest image's glibc.
+          - os: ubuntu-22.04
             asset: relift-linux-x64
           - os: windows-latest
             asset: relift-windows-x64.exe
