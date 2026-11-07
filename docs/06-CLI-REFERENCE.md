@@ -131,6 +131,55 @@ relift plan --target 10.10.10.20 --profile lab --scope scope.json --no-ai
 | `--no-ai` | off | force the rule engine |
 | `--json` | off | emit the plan as JSON |
 
+## `relift attack`
+
+The one-command form: author a scope for exactly this target, then run the plan.
+The scope is a real file with a 24-hour expiry under `~/.relift/scopes/` (override
+the directory with `RELIFT_SCOPE_DIR`), so the authorisation record and audit line
+still exist — the shortcut removes the setup step, not the gate.
+
+```bash
+# the default: safe tier, logs look like browsing
+relift attack --target https://lab.example.com
+
+# depth 3 adds external tools (nmap, nuclei) when they are installed
+relift attack --target https://lab.example.com --depth 3
+
+# depth 4-5: intrusive tier, your own infrastructure only
+relift attack --target http://10.10.10.20 --depth 4
+
+# reuse a scope you already wrote (depth then only lowers the ceiling)
+relift attack --target http://127.0.0.1:8080 --scope scope.json --depth 2
+```
+
+| Depth | Name | Profile | Ceiling | Adds |
+|---|---|---|---|---|
+| `1` | passive | `passive` | passive | DNS, headers, certificate, disclosure |
+| `2` | safe (default) | `safe` | safe | port sweep, methods, TLS versions |
+| `3` | standard | `standard` | safe | external templates (`nmap`, `nuclei`) |
+| `4` | intrusive | `lab` | intrusive | server audit, bounded SQLi, credential verify |
+| `5` | full | `lab` | intrusive | everything above plus external tools |
+
+Names work too: `--depth safe`, `--depth intrusive`, `--depth full`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--target T` | required | any form from the target table |
+| `--depth N` | `2` | `1`-`5` or a name from the table |
+| `--scope S` | — | use this scope instead of authoring one |
+| `--expires ISO` | +24 hours | expiry written into the authored scope |
+| `--authorized-by` | `Jay` | who signed off |
+| `--organization` | `Pixelcity` | organisation |
+| `--ports LIST` | common set | port set for the sweep and the scope |
+| `--db-creds FILE` | — | credentials you already hold (depth 4+) |
+| `--sqli-url` / `--sqli-param` | — | bounded injection probe (depth 4+) |
+| `--ai ID` / `--no-ai` | auto | analyst selection |
+| `--timeout`, `--insecure`, `--json` | — | as for `scan` |
+
+Intrusive techniques still require both an intrusive scope and the `lab` profile;
+`--depth 4` sets both. Depth 3/5 only include external binaries that are actually
+on `PATH`; when they are missing, the plan skips them and says so.
+
 ## `relift scan`
 
 Executes the plan. **Dry-run unless `--execute` is given.**
