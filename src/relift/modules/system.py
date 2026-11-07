@@ -13,7 +13,13 @@ this against your distro's advisory", never "this host is exploitable".
 
 from __future__ import annotations
 
-import grp
+try:
+    import grp  # POSIX only; Windows has no group database
+    _HAS_GRP = True
+except ImportError:  # pragma: no cover - exercised on the Windows CI runner
+    grp = None  # type: ignore[assignment]
+    _HAS_GRP = False
+
 import os
 import platform
 import re
@@ -213,14 +219,23 @@ def _world_writable() -> list[str]:
     return sorted(set(found))
 
 
+def _group_name(gid: int) -> str:
+    """Resolve a gid, or fall back to its number where there is no group db."""
+    if not _HAS_GRP:
+        return str(gid)
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
 def _group_names() -> set[str]:
     names: set[str] = set()
+    if not _HAS_GRP:
+        return names
     try:
         for gid in os.getgroups():
-            try:
-                names.add(grp.getgrgid(gid).gr_name)
-            except KeyError:
-                continue
+            names.add(_group_name(gid))
     except OSError:
         pass
     return names
@@ -241,10 +256,7 @@ def _docker_socket() -> tuple[bool, str]:
         if not stat.S_ISSOCK(info.st_mode):
             continue
         mode = stat.S_IMODE(info.st_mode)
-        try:
-            owner_group = grp.getgrgid(info.st_gid).gr_name
-        except KeyError:
-            owner_group = str(info.st_gid)
+        owner_group = _group_name(info.st_gid)
         if mode & 0o006:
             return True, f"{path} mode {mode:04o}: any local account can drive the runtime"
         if owner_group in groups:
