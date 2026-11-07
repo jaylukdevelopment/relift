@@ -86,25 +86,26 @@ jobs:
         run: |
           set -euo pipefail
           python -c "
-          import json, re, threading, urllib.error, urllib.request
+          import http.client, json, threading
           from relift.api import build_server
           server, token = build_server(0)
           thread = threading.Thread(target=server.serve_forever, daemon=True)
           thread.start()
           host, port = server.server_address
-          base = f'http://{host}:{port}'
-          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-          html = opener.open(base + '/', timeout=10).read().decode()
+          # http.client never consults a system proxy, unlike urllib.
+          conn = http.client.HTTPConnection(host, port, timeout=10)
+          conn.request('GET', '/')
+          response = conn.getresponse()
+          html = response.read().decode()
+          assert response.status == 200, response.status
           assert 'RELIFT_BOOT' in html, 'UI was served without the bootstrap token'
-          request = urllib.request.Request(base + '/api/meta')
-          try:
-              opener.open(request, timeout=10)
-          except urllib.error.HTTPError as exc:
-              assert exc.code == 401, exc.code
-          else:
-              raise SystemExit('API answered without a token')
-          request.add_header('X-Relift-Token', token)
-          meta = json.loads(opener.open(request, timeout=10).read())
+          conn.request('GET', '/api/meta')
+          response = conn.getresponse()
+          response.read()
+          assert response.status == 401, response.status
+          conn.request('GET', '/api/meta', headers={'X-Relift-Token': token})
+          response = conn.getresponse()
+          meta = json.loads(response.read())
           assert meta['counts']['total'] > 0
           server.shutdown()
           print('desktop api ok:', meta['version'])
