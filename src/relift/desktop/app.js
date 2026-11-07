@@ -50,7 +50,12 @@ function buildTable(headers, rows, onRow) {
   const table = el("table");
   const thead = el("thead");
   const headRow = el("tr");
-  headers.forEach((name) => headRow.appendChild(el("th", "", name)));
+  headers.forEach((spec) => {
+    // A header is either a label or [label, class] for a column of figures.
+    const label = Array.isArray(spec) ? spec[0] : spec;
+    const cls = Array.isArray(spec) ? spec[1] || "" : "";
+    headRow.appendChild(el("th", cls, label));
+  });
   thead.appendChild(headRow);
   table.appendChild(thead);
 
@@ -110,15 +115,22 @@ async function api(path, options) {
 }
 
 // -- notices -----------------------------------------------------------------
+let noticeTimer = null;
+
 function notify(message, kind) {
   const banner = $("banner");
   const text = String(message || "");
   $("banner-text").textContent = text;
   banner.className = "banner" + (kind && kind !== "error" ? " " + kind : "");
   banner.hidden = false;
+  // A success is confirmation, not a permanent bar: errors stay until dismissed.
+  if (noticeTimer) clearTimeout(noticeTimer);
+  if (kind === "ok") noticeTimer = setTimeout(hideNotice, 4200);
 }
 
 function hideNotice() {
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = null;
   $("banner").hidden = true;
 }
 
@@ -131,6 +143,12 @@ function reportError(error) {
 }
 
 // -- formatting --------------------------------------------------------------
+function stamp(value) {
+  // ISO instants are for artefacts; the console shows the same moment compactly.
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(value || ""));
+  return match ? match[1] + " " + match[2] : String(value || "");
+}
+
 function severityCounts(findings) {
   const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
   (findings || []).forEach((item) => {
@@ -144,35 +162,45 @@ function severityCounts(findings) {
 function renderGate() {
   const gate = $("gate");
   const text = $("gate-text");
+  const meta = $("gate-meta");
+  const facts = $("scan-scope-state");
   const scope = state.scope;
+  clear(facts);
+
   if (!scope) {
     gate.className = "gate";
-    text.textContent = "no scope loaded";
-    $("scan-scope-state").textContent = "no scope loaded";
+    text.textContent = "No scope loaded";
+    meta.textContent = "";
+    facts.appendChild(
+      el("div", "empty", "No scope loaded. A run stays disabled until a file is loaded.")
+    );
     return;
   }
+
   const days = Number(scope.expires_in_days);
   gate.className = "gate " + (days <= 0 ? "warn" : "ok");
-  text.textContent =
-    scope.engagement + " · " + days + "d left · ceiling " + (scope.max_risk || "safe");
-  $("scan-scope-state").textContent =
-    scope.engagement +
-    " · " +
-    (scope.allow_intrusive ? "intrusive allowed" : "intrusive blocked") +
-    " · " +
-    scope.allowed_hosts.length +
-    " allow entr" +
-    (scope.allowed_hosts.length === 1 ? "y" : "ies") +
-    " · sha256 " +
-    String(scope.sha256 || "").slice(0, 12);
+  text.textContent = days <= 0 ? scope.engagement + " (expired)" : scope.engagement;
+  meta.textContent = "";
+
+  const entries = scope.allowed_hosts.length;
+  const denied = (scope.denied_hosts || []).length;
+  const hash = String(scope.sha256 || "");
+  [
+    ["Ceiling", scope.max_risk || "safe"],
+    ["Intrusive", scope.allow_intrusive ? "Allowed" : "Blocked"],
+    ["Allow list", entries + (entries === 1 ? " host" : " hosts") + (denied ? ", " + denied + " denied" : "")],
+    ["Expires", days <= 0 ? "Expired" : days + (days === 1 ? " day" : " days")],
+    ["Scope hash", hash ? hash.slice(0, 12) + "…" : "—"],
+  ].forEach(([key, value]) => {
+    facts.appendChild(el("dt", "", key));
+    facts.appendChild(el("dd", "", value));
+  });
 }
 
 function updateRunEnabled() {
   const enabled = Boolean(state.scope);
   $("scan-run").disabled = !enabled;
-  $("scan-run-why").textContent = enabled
-    ? ""
-    : "load a scope to enable a run";
+  $("scan-run-why").textContent = enabled ? "" : "Load a scope to enable a run.";
 }
 
 // -- panes and tabs ----------------------------------------------------------
@@ -233,10 +261,10 @@ function setScanBusy(busy) {
   $("scan-run").disabled = busy || !state.scope;
   $("scan-spinner").hidden = !busy;
   $("scan-run-why").textContent = busy
-    ? "scan running — the log is live"
+    ? "Scanning. The log updates as the engine works."
     : state.scope
     ? ""
-    : "load a scope to enable a run";
+    : "Load a scope to enable a run.";
 }
 
 async function ensureScopeLoaded() {
@@ -258,8 +286,7 @@ async function doPlan() {
     return;
   }
   const output = $("scan-output");
-  clear(output);
-  output.appendChild(el("p", "hint", "planning…"));
+  clear(output);    output.appendChild(el("p", "hint", "Planning."));
   try {
     const plan = await api("/api/plan", { method: "POST", body });
     clear(output);
@@ -268,17 +295,16 @@ async function doPlan() {
       el(
         "p",
         "hint",
-        "ceiling " +
+        "Ceiling " +
           plan.ceiling +
-          " · analyst " +
+          ", analyst " +
           plan.analyst +
-          (plan.note ? " · " + plan.note : "")
+          (plan.note ? ". " + plan.note : ".")
       )
     );
     output.appendChild(head);
 
-    const rows = (plan.techniques || []).map((spec, index) => [
-      cell(String(index + 1), "num"),
+    const rows = (plan.techniques || []).map((spec) => [
       cell(spec.id, "id"),
       cell(spec.name),
       cell(spec.risk),
@@ -290,9 +316,15 @@ async function doPlan() {
       );
       return;
     }
-    output.appendChild(buildTable(["#", "Technique", "Name", "Tier", "Status"], rows));
+    output.appendChild(buildTable(["Technique", "Name", "Tier", "Status"], rows));
     output.appendChild(
-      el("p", "hint", rows.length + " technique(s) would run. Planning sends nothing.")
+      el(
+        "p",
+        "hint",
+        rows.length +
+          (rows.length === 1 ? " technique would run." : " techniques would run.") +
+          " Planning sends nothing."
+      )
     );
   } catch (error) {
     clear(output);
@@ -403,11 +435,13 @@ function renderFindings(findings) {
     const body = el("div", "body");
     body.appendChild(el("div", "title", item.title || "(untitled)"));
     const meta = el("div", "meta");
-    meta.textContent =
-      (item.attack_id || "") +
-      " · confidence " +
-      (item.confidence || "high") +
-      (item.target ? " · " + item.target : "");
+    meta.textContent = [
+      item.attack_id || "",
+      "confidence " + (item.confidence || "high"),
+      item.target || "",
+    ]
+      .filter(Boolean)
+      .join(", ");
     body.appendChild(meta);
 
     if (item.detail) body.appendChild(el("div", "detail", item.detail));
@@ -482,10 +516,10 @@ function renderRun(payload) {
     payload.engagement ? "engagement " + payload.engagement : "",
     payload.profile ? "profile " + payload.profile : "",
     payload.provider ? "analyst " + payload.provider : "",
-    payload.started || "",
+    payload.started ? stamp(payload.started) + " UTC" : "",
   ]
     .filter(Boolean)
-    .join("  ·  ");
+    .join(", ");
 
   const counts = severityCounts(payload.findings || []);
   const sevHost = $("run-severities");
@@ -605,9 +639,11 @@ function renderCatalog() {
     cell((spec.families || []).join(", "), "num"),
   ]);
   host.appendChild(
-    buildTable(["ID", "Technique", "Tier", "Status", "Families"], rows, (index) => {
-      renderTechniqueDetail(shown[index].id);
-    })
+    buildTable(
+      ["ID", "Technique", "Tier", "Status", ["Families", "num"]],
+      rows,
+      (index) => renderTechniqueDetail(shown[index].id)
+    )
   );
 
   if (state.selectedTechnique && shown.some((s) => s.id === state.selectedTechnique)) {
@@ -655,7 +691,7 @@ function scopePairs(scope) {
     ["Engagement", scope.engagement],
     ["Authorised by", (scope.authorized_by || "") + (scope.organization ? " · " + scope.organization : "")],
     ["Path", scope.path],
-    ["Expires", scope.expires + " (" + scope.expires_in_days + "d)"],
+    ["Expires", stamp(scope.expires) + " UTC (" + scope.expires_in_days + " days)"],
     ["Max risk", scope.max_risk],
     ["Intrusive", scope.allow_intrusive ? "allowed" : "blocked"],
     ["Rate limit", scope.rate_limit_rps + " rps"],
@@ -739,10 +775,12 @@ async function createScope(event) {
 // -- runs --------------------------------------------------------------------
 async function loadRuns() {
   const data = await api("/api/runs");
-  $("runs-root").textContent = "runs root: " + data.runs_root;
   const host = $("runs-table");
   clear(host);
   const runs = data.runs || [];
+  $("runs-root").textContent = runs.length
+    ? runs.length + (runs.length === 1 ? " run" : " runs") + ", newest first."
+    : "No runs recorded yet.";
   if (!runs.length) {
     host.appendChild(emptyNote("No runs yet. Start one from the Scan tab."));
     return;
@@ -752,7 +790,7 @@ async function loadRuns() {
     const sevCell = cell(worst ? "" : "—");
     if (worst) sevCell.appendChild(tag(worst));
     return [
-      cell(run.started, "num"),
+      cell(stamp(run.started), "num"),
       cell(run.target, "id"),
       cell(run.engagement || "—"),
       cell(run.profile || "—"),
@@ -762,14 +800,26 @@ async function loadRuns() {
     ];
   });
   host.appendChild(
-    buildTable(["Started", "Target", "Engagement", "Profile", "Findings", "Threads", "Worst"], rows, async (index) => {
-      try {
-        const payload = await api("/api/runs/" + encodeURIComponent(runs[index].run_id));
-        renderRun(payload);
-      } catch (error) {
-        reportError(error);
+    buildTable(
+      [
+        "Started",
+        "Target",
+        "Engagement",
+        "Profile",
+        ["Findings", "num"],
+        ["Threads", "num"],
+        "Worst",
+      ],
+      rows,
+      async (index) => {
+        try {
+          const payload = await api("/api/runs/" + encodeURIComponent(runs[index].run_id));
+          renderRun(payload);
+        } catch (error) {
+          reportError(error);
+        }
       }
-    })
+    )
   );
 }
 
@@ -788,7 +838,11 @@ function applyMeta(meta) {
   const profile = $("scan-profile");
   clear(profile);
   (meta.profiles || []).forEach((item) => {
-    const option = el("option", "", item.name + " — " + item.max_risk);
+    const option = el(
+      "option",
+      "",
+      item.name === item.max_risk ? item.name : item.name + " (" + item.max_risk + ")"
+    );
     option.value = item.name;
     if (item.name === meta.default_profile) option.selected = true;
     profile.appendChild(option);

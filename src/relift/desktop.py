@@ -31,7 +31,7 @@ from .api import build_server, static_root
 TITLE = f"Relift {__version__}"
 DEFAULT_SIZE = (1280, 880)
 MIN_SIZE = (1000, 700)
-SPLASH_SIZE = (480, 320)
+SPLASH_SIZE = (420, 268)
 # The splash animation runs for about a second; never flash past it.
 SPLASH_MIN_VISIBLE = 1.35
 
@@ -97,9 +97,10 @@ def _splash_source() -> str | None:
     """Inline the bundled splash. Returns None if the asset is missing."""
     candidate = static_root() / "splash.html"
     try:
-        return candidate.read_text(encoding="utf-8")
+        source = candidate.read_text(encoding="utf-8")
     except OSError:
         return None
+    return source.replace("{{version}}", __version__)
 
 
 def _display_available() -> bool:
@@ -201,7 +202,7 @@ def _open_webview(
             y=state.get("y"),
             min_size=MIN_SIZE,
             hidden=True,
-            background_color="#0a0b0d",
+            background_color="#000101",
             text_select=True,
         )
         source = _splash_source() if splash else None
@@ -215,7 +216,7 @@ def _open_webview(
                 frameless=True,
                 easy_drag=True,
                 on_top=True,
-                background_color="#0a0b0d",
+                background_color="#000101",
                 text_select=False,
             )
         def _on_closed(*_args: Any) -> None:
