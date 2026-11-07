@@ -169,14 +169,31 @@ relift desktop --no-window --port 8765
 `Ctrl+C` stops the server. If a native window is used, closing the window stops
 the server.
 
+### One-line install (Linux x86-64)
+
+```bash
+# latest release, checksum verified, into ~/.local/bin
+curl -fsSL https://pixelcity.dev/lab/relift/install.sh | sh
+
+# the engine without the window
+curl -fsSL https://pixelcity.dev/lab/relift/install.sh | sh -s -- --cli
+
+# choose the directory
+curl -fsSL https://pixelcity.dev/lab/relift/install.sh | sh -s -- --bin "$HOME/bin"
+```
+
+The script resolves the newest release asset, compares it with the published
+`.sha256`, and installs one binary (`relift-desktop` or `relift`). Windows has
+no shell installer; download the `.exe` from the release page.
+
 ### Native window
 
 ```bash
 python -m pip install -e ".[desktop]"
 ```
 
-That pulls in `pywebview`. The window is created at 1240×860 (minimum
-980×680) and loads the same loopback URL. If importing or starting `pywebview`
+That pulls in `pywebview`. The window is created at 1280×880 (minimum
+1000×700) and loads the same loopback URL. If importing or starting `pywebview`
 fails for any reason — missing GTK, missing WebView2, headless session — the
 launcher falls back to the default browser instead of failing.
 
