@@ -160,6 +160,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # curl must not consult a proxy for the loopback smoke test.
+          export no_proxy=127.0.0.1,localhost
           if [ "${RUNNER_OS}" = "Windows" ]; then
             SRC="dist/relift-desktop.exe"
           else
