@@ -1,13 +1,18 @@
 version: 2
 
 updates:
-  # CI and release workflow actions. Pinned majors go stale silently otherwise.
+  # CI and release workflow actions. Majors are ignored on purpose: a major bump
+  # of an artifact or checkout action changes inputs and defaults, and the release
+  # workflow publishes binaries, so it gets read and tested by a person first.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
     commit-message:
       prefix: "ci"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # Dev-only dependencies: the runtime is stdlib-only on purpose.
   - package-ecosystem: "pip"
