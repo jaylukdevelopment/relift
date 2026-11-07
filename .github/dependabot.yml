@@ -1,0 +1,21 @@
+version: 2
+
+updates:
+  # CI and release workflow actions. Pinned majors go stale silently otherwise.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "ci"
+
+  # Dev-only dependencies: the runtime is stdlib-only on purpose.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "deps"
+    groups:
+      dev:
+        patterns: ["*"]

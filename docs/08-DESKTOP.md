@@ -6,10 +6,11 @@ functions as the CLI: `load_scope`, `scope.authorize`, `make_plan`, `execute`,
 `write_run`. There is no desktop-specific scan path, and therefore no
 desktop-specific way around the scope gate.
 
-It is not an Electron app. The UI is three static files, the backend is the
-standard library, and the native window is provided by `pywebview` (WebView2 on
-Windows, WebKitGTK on Linux) when it is installed. When it is not installed the
-same URL opens in the default browser and nothing else changes.
+It is not an Electron app. The UI is four static assets — three served over HTTP
+plus the splash the launcher renders itself — the backend is the standard library,
+and the native window is provided by `pywebview` (WebView2 on Windows, WebKitGTK on
+Linux) when it is installed. When it is not installed, or when there is no display,
+the same URL opens in the default browser and nothing else changes.
 
 ---
 
@@ -35,10 +36,12 @@ relift desktop
 | `src/relift/desktop/app.html` | single page |
 | `src/relift/desktop/app.css` | styles |
 | `src/relift/desktop/app.js` | UI logic, calls `/api/*` with the token |
+| `src/relift/desktop/splash.html` | startup animation, inlined and shown while the server boots |
 
-Only those three static files are served, from a fixed whitelist keyed by exact
-path. There is no path joining, no directory listing and no template rendering
-of user input. `favicon.ico` returns `204`.
+Only the three HTTP assets are served, from a fixed whitelist keyed by exact path.
+There is no path joining, no directory listing and no template rendering of user
+input. `favicon.ico` returns `204`. The splash is read from the package by the
+launcher and injected into its own frameless window, so it is never a route.
 
 The HTML is served with a small script injected immediately before `</head>`:
 
@@ -131,11 +134,16 @@ Notes:
 
 ### Example
 
+The token is handed to the page (`window.RELIFT_BOOT.token`) and is never printed to
+a terminal, so a second shell cannot scrape it. To poke the API by hand, start the
+app with `--debug`, open the WebView devtools, read the token from
+`window.RELIFT_BOOT.token`, and use it in the header:
+
 ```bash
 # start headless on a chosen port
 relift desktop --no-window --port 8765
 
-# in another shell, with the token the server printed
+# the request shape the UI itself uses
 curl -s -H "X-Relift-Token: $TOKEN" http://127.0.0.1:8765/api/meta | jq .
 ```
 
@@ -165,6 +173,9 @@ relift desktop --no-window --port 8765
 |---|---|---|
 | `--port N` | `0` | `0` picks a free ephemeral port |
 | `--no-window` | off | serve only; print the URL instead of opening a window |
+| `--browser` | off | open the console in the default browser instead of a native window |
+| `--no-splash` | off | skip the startup animation and show the console immediately |
+| `--debug` | off | enable the WebView devtools (and the token, above) |
 
 `Ctrl+C` stops the server. If a native window is used, closing the window stops
 the server.
@@ -192,10 +203,18 @@ no shell installer; download the `.exe` from the release page.
 python -m pip install -e ".[desktop]"
 ```
 
-That pulls in `pywebview`. The window is created at 1280×880 (minimum
-1000×700) and loads the same loopback URL. If importing or starting `pywebview`
-fails for any reason — missing GTK, missing WebView2, headless session — the
-launcher falls back to the default browser instead of failing.
+That pulls in `pywebview`. The window is created at 1280×880 (minimum 1000×700)
+and loads the same loopback URL. Position and size are remembered in
+`~/.relift/desktop-window.json` (override the directory with `RELIFT_HOME`), so a
+window moved to a second monitor comes back there; a window that would open
+entirely off-screen is pulled back onto the visible area.
+
+A frameless 420×268 splash runs while the server starts and stays for at least
+1.35 s, so the animation is never cut off. `--no-splash` skips it.
+
+If importing or starting `pywebview` fails for any reason — missing GTK, missing
+WebView2, headless session — the launcher falls back to the default browser
+instead of failing.
 
 | Platform | Window runtime | Package |
 |---|---|---|

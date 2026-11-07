@@ -9,10 +9,21 @@ relift [--version] [--no-color] [--config PATH] <command> [flags]
 | `0` | success |
 | `1` | a module errored during a scan (the run is still written and reportable) |
 | `2` | refused by the scope gate — nothing was sent |
-| `3` | bad usage, bad input, unknown category, missing run, bad credential file |
+| `3` | bad input that got past argparse: unknown category, missing run, bad credential file, unreadable config |
 | `130` | interrupted (Ctrl+C) |
 
+A malformed command line — unknown flag, missing `--target`/`--scope`, a `--format`
+value that does not exist — is rejected by argparse with `2` before Relift sees it,
+so the usage line is what tells the two `2`s apart.
+
 Running `relift` with no command prints the banner and the help text and exits `0`.
+
+Two global flags apply to every command:
+
+| Flag | Meaning |
+|---|---|
+| `--config PATH` | read `relift.config.json` from here instead of the default locations |
+| `--no-color` | plain output for files, CI logs and pipes |
 
 ---
 
@@ -45,8 +56,9 @@ not bypass the gate.
 
 ## `relift list`
 
-Prints the attack catalogue — every technique the tool knows, its tier, whether it is
-implemented, and what it needs.
+Prints the attack catalogue — every technique the tool knows, its tier and its
+status. A technique that needs an external binary says so in the status column
+(`ext: nmap`); design-only entries are dimmed.
 
 ```bash
 relift list
@@ -63,14 +75,18 @@ relift list --json
 
 An unknown `--category` exits `3` and lists the valid ones.
 
+The banner and the count line come first, then the table:
+
 ```
+RELIFT · Pixelcity Red Team Orchestrator · v0.2.0
+24 techniques · 16 ready · 3 external · 5 design-only / excluded
+
 ID                        TECHNIQUE                              TIER      STATUS
 recon.dns                 DNS resolution & address inventory      passive   ready
 recon.http_fingerprint    HTTP fingerprint                        passive   ready
 recon.port_scan           TCP connect sweep                       safe      ready
 recon.service_scan        Service/version detection               safe      ext: nmap
 ...
-24 techniques · 16 ready · 3 external · 5 design-only / excluded
 ```
 
 ## `relift providers`
@@ -96,7 +112,7 @@ relift init-scope --engagement db-lab --host 127.0.0.1 \
 | Flag | Default | Meaning |
 |---|---|---|
 | `--engagement NAME` | required | engagement name, appears in every audit line |
-| `--host H` | `127.0.0.1` | repeatable; host, wildcard or CIDR |
+| `--host H` | `127.0.0.1` and `::1` | repeatable; host, wildcard or CIDR |
 | `--deny H` | — | repeatable deny entry |
 | `--out PATH` | `scope.json` | output path |
 | `--max-risk R` | `safe` | `passive` or `safe` |
@@ -157,10 +173,12 @@ relift attack --target http://127.0.0.1:8080 --scope scope.json --depth 2
 | `1` | passive | `passive` | passive | DNS, headers, certificate, disclosure |
 | `2` | safe (default) | `safe` | safe | port sweep, methods, TLS versions |
 | `3` | standard | `standard` | safe | external templates (`nmap`, `nuclei`) |
-| `4` | intrusive | `lab` | intrusive | server audit, bounded SQLi, credential verify |
-| `5` | full | `lab` | intrusive | everything above plus external tools |
+| `4` | intrusive | `lab` | intrusive | bounded SQLi, credential verify, intrusive web checks |
+| `5` | full | `lab` | intrusive | everything, including the external binaries (nmap, nuclei, nikto) |
 
-Names work too: `--depth safe`, `--depth intrusive`, `--depth full`.
+Depth `4` deliberately excludes external tools, so the nikto server audit and the
+nmap/nuclei scans need depth `5`. Names work too: `--depth quiet`, `passive`,
+`safe`, `standard`, `intrusive`, `deep`, `full`, `max`.
 
 | Flag | Default | Meaning |
 |---|---|---|

@@ -12,8 +12,8 @@ this repository.
 | <https://pixelcity.dev/lab/relift/install.sh> | The checksum-verifying installer |
 | <https://pixelcity.dev/lab/relift/downloads/> | Linux binary mirror used by the installer |
 
-`relift.pixelcity.dev` redirects to the lab path. `pixelcity.top` and
-`www.pixelcity.top` serve the same container.
+The lab path is the canonical URL; there is no separate `relift.*` hostname.
+`pixelcity.top` and `www.pixelcity.top` serve the same container.
 
 ## Serving
 
@@ -43,15 +43,28 @@ Back up the Caddyfile first: `cp Caddyfile Caddyfile.bak-$(date +%F-%H%M)`.
 
 1. **Documentation.** At image build, `docs/` is copied in and the docs pages are
    generated from the Markdown. A doc fix reaches the site only on redeploy.
-2. **The Linux mirror.** The binaries in `/lab/relift/downloads` are the same
-   files published on the GitHub release, plus their `.sha256` sidecars. The
+2. **The Linux mirror.** The binaries in `/lab/relift/downloads` must be the exact
+   bytes published on the GitHub release, plus their `.sha256` sidecars. They are a
+   copy, not a second build: a locally rebuilt binary has a different checksum, and
+   the download page would then publish a hash that does not match the release. The
    installer tries this mirror first and falls back to the GitHub release.
 
 The Windows executables are not mirrored; the download page links the GitHub
 release for those. See [`10-RELEASES.md`](10-RELEASES.md) for the asset matrix.
 
+## Refreshing the mirror after a tag
+
+```bash
+gh release download v0.2.0 -R jaylukdevelopment/relift \
+  -p 'relift-linux-x64*' -p 'relift-desktop-linux-x64*' -D site/public/downloads
+sha256sum -c site/public/downloads/*.sha256
+```
+
+Then redeploy the container. Copy the assets; do not rebuild them for the mirror.
+
 ## Checks
 
 The site repository owns its own gates (type check, production build, design
-inspection). For this repository, the only relevant check is that every internal
-documentation link resolves and that a release keeps the docs accurate.
+inspection). For this repository, the relevant checks are that every internal
+documentation link resolves, that a release keeps the docs accurate, and that the
+mirror files match the release checksums.

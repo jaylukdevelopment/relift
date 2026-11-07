@@ -7,7 +7,9 @@ A [Pixelcity](https://pixelcity.dev) tool. Built and maintained by **Jay**.
 [![release](https://github.com/jaylukdevelopment/relift/actions/workflows/release.yml/badge.svg)](https://github.com/jaylukdevelopment/relift/releases)
 [![license: source-available](https://img.shields.io/badge/license-source--available-blue.svg)](LICENSE)
 
-[relift.pixelcity.dev](https://relift.pixelcity.dev) · [download](https://relift.pixelcity.dev/download) · [documentation](https://relift.pixelcity.dev/docs)
+[pixelcity.dev/lab/relift](https://pixelcity.dev/lab/relift) · [download](https://pixelcity.dev/lab/relift/download) · [documentation](https://pixelcity.dev/lab/relift/docs)
+
+![Relift desktop: findings view of a completed run](docs/img/desktop-findings.png)
 
 ```
 relift  ::  Pixelcity Red Team Orchestrator  ::  v0.2.0
@@ -206,7 +208,8 @@ relift chains --run <id> --format json     # machine-readable
 
 `relift desktop` starts one loopback server and points a window at it. It is the
 same process, the same scope file and the same engine functions as the CLI — there
-is no second path around the gate.
+is no second path around the gate. The screenshot at the top of this page is that
+window after a run against `127.0.0.1`.
 
 ```bash
 # native window when pywebview is installed (WebView2 / WebKitGTK)
@@ -321,6 +324,7 @@ catalogue, it never emits shell commands, and it never sees credentials. Details
 | [`docs/08-DESKTOP.md`](docs/08-DESKTOP.md) | Desktop architecture, API, security model, build commands |
 | [`docs/09-SITE.md`](docs/09-SITE.md) | The public page and how it relates to the tool |
 | [`docs/10-RELEASES.md`](docs/10-RELEASES.md) | Versioning, tag flow, assets, installer, checksums |
+| [`docs/11-FAQ.md`](docs/11-FAQ.md) | First-run problems, scope refusals, where the data lives |
 
 Also: [`docs/README.md`](docs/README.md) (index and reading order),
 [`SECURITY.md`](SECURITY.md) (private reporting and safe harbour),

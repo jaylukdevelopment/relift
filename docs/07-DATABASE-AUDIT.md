@@ -38,10 +38,11 @@ win, and a hostname is resolved before it is authorised. The scheme is not part
 of the scope decision — the same host you are allowed to scan over HTTPS is the
 host you are allowed to audit over TCP/5432, if the scope says so.
 
-The plan is filtered by target family. A database target gets `recon.*`,
-`db.*`, `analysis.*` and the narrative; it does not get `web.*` or `tls.*`.
-Elasticsearch and CouchDB are the exception: they speak HTTP, so they get both
-families and the web header/method checks run against them too.
+The plan is filtered by target family. A wire-protocol database target gets
+`recon.*`, `db.*`, `analysis.*` and the narrative; it does not get `web.*` or
+`tls.*`. Elasticsearch and CouchDB are the exception: they speak HTTP, so their
+targets carry both families, which means the web header/method checks **and** the
+TLS checks run against them too.
 
 ```bash
 relift plan --target postgres://127.0.0.1:5432/appdb --scope scope.json
@@ -127,12 +128,13 @@ The severities:
 
 | Observation | Severity |
 |---|---|
-| No authentication demanded (PG trust, open Redis, open Elasticsearch/CouchDB) | critical |
-| Replayable credential exchange (cleartext or md5) over a plaintext socket | high |
-| Replayable credential exchange, TLS available | medium |
-| Build past end of life, listener reachable | high |
-| No TLS offered by a database listener | medium (postgres/mysql/mssql), low (redis/mongo) |
+| No authentication demanded — PG trust, open Redis, open MSSQL, open MySQL | critical |
+| No authentication demanded — Elasticsearch or CouchDB over HTTP | high |
 | MongoDB `hello` reachable | medium, with an explicit "this is reachability, not exposure" |
+| Replayable credential exchange (cleartext or md5) | medium |
+| Replayable credential exchange **plus** no TLS | high (the separate no-TLS finding) |
+| Build past end of life, listener reachable | high |
+| No TLS offered by a database listener | medium (postgres/mysql/mssql), low (redis/mongo); ES/CouchDB report it through `tls.*` instead |
 | Authentication required, modern method | informational |
 
 ### End-of-life table
@@ -227,8 +229,8 @@ never faked.
 
 | Level | PostgreSQL | MySQL | Redis | MongoDB |
 |---|---|---|---|---|
-| `superuser` | `is_superuser` is `on`, or role is `superuser` | a global grant (`ON *.*` with `WITH GRANT OPTION`) containing `SUPER`, `SYSTEM_USER`, `FILE` or `CREATE USER`, or legacy `ALL PRIVILEGES` | — | role `root`, `__system` or `clusterAdmin` |
-| `admin` | — | global grant with `WITH GRANT OPTION` | `CONFIG GET` succeeds | — |
+| `superuser` | `is_superuser` is `on`, or role is `superuser` | a global grant (`ON *.*` with `WITH GRANT OPTION`) containing `SUPER`, `SYSTEM_USER`, `FILE` or `CREATE USER`, or any grant containing `ALL PRIVILEGES` | — | role `root`, `__system` or `clusterAdmin` |
+| `admin` | — | global grant with `WITH GRANT OPTION` | `CONFIG GET` succeeds | any role containing `AnyDatabase` |
 | `authenticated` | login works, not superuser | login works, no global grant | login works, `CONFIG` refused | login works, no admin role |
 | `unknown` | check did not complete | same | same | same |
 

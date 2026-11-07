@@ -17,11 +17,13 @@ cut.
 | [`08-DESKTOP.md`](08-DESKTOP.md) | Desktop architecture, API table, security model, build commands |
 | [`09-SITE.md`](09-SITE.md) | The public page and how it relates to the tool |
 | [`10-RELEASES.md`](10-RELEASES.md) | Versioning, tag flow, release assets, installer, checksum verification |
+| [`11-FAQ.md`](11-FAQ.md) | Install failures, scope refusals, missing techniques, where the data lives |
 
 ## Reading order
 
 1. **Operator:** [`03-RULES-OF-ENGAGEMENT.md`](03-RULES-OF-ENGAGEMENT.md), then
-   [`06-CLI-REFERENCE.md`](06-CLI-REFERENCE.md).
+   [`06-CLI-REFERENCE.md`](06-CLI-REFERENCE.md). Stuck on the first run?
+   [`11-FAQ.md`](11-FAQ.md).
 2. **Reviewer or new contributor:** [`01-ARCHITECTURE.md`](01-ARCHITECTURE.md),
    [`02-ATTACK-CATALOG.md`](02-ATTACK-CATALOG.md), then
    [`CONTRIBUTING.md`](../CONTRIBUTING.md).
