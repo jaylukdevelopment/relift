@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import BANNER, __version__, catalog
@@ -32,7 +32,7 @@ from .report import (
     yellow,
 )
 from .runner import execute, make_plan
-from .scope import ScopeError, build_scope_document, load_scope
+from .scope import ScopeError, build_scope_document, load_scope, resolve_host
 
 
 def _err(message: str) -> None:
@@ -133,6 +133,118 @@ def _add_analyst_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-ai", action="store_true", help="force the rule engine")
 
 
+# depth -> (profile, scope ceiling, allow_intrusive, include_external)
+ATTACK_DEPTHS: dict[str, tuple[str, Risk, bool, bool]] = {
+    "1": ("passive", Risk.PASSIVE, False, False),
+    "2": ("safe", Risk.SAFE, False, False),
+    "3": ("standard", Risk.SAFE, False, True),
+    "4": ("lab", Risk.INTRUSIVE, True, False),
+    "5": ("lab", Risk.INTRUSIVE, True, True),
+}
+
+_DEPTH_ALIASES = {
+    "quiet": "1",
+    "passive": "1",
+    "safe": "2",
+    "standard": "3",
+    "intrusive": "4",
+    "deep": "4",
+    "full": "5",
+    "max": "5",
+}
+
+DEPTH_NAMES = {
+    "1": "passive",
+    "2": "safe",
+    "3": "standard",
+    "4": "intrusive",
+    "5": "full",
+}
+
+
+def _parse_depth(value: str) -> tuple[str, str, Risk, bool, bool]:
+    """Turn ``--depth 3`` (or a name) into a profile and a scope ceiling."""
+    text = str(value).strip().lower()
+    text = _DEPTH_ALIASES.get(text, text)
+    if text not in ATTACK_DEPTHS:
+        raise ValueError(
+            f"unknown depth {value!r}; use 1-5 or "
+            "passive, safe, standard, intrusive, full"
+        )
+    profile, ceiling, intrusive, external = ATTACK_DEPTHS[text]
+    return text, profile, ceiling, intrusive, external
+
+
+def _attack_scope_path(host: str) -> Path:
+    root = Path(
+        os.environ.get("RELIFT_SCOPE_DIR")
+        or (Path.home() / ".relift" / "scopes")
+    ).expanduser()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe = "".join(c if c.isalnum() or c in ".-_" else "_" for c in host)[:60]
+    return root / f"attack-{safe}-{stamp}.json"
+
+
+def _author_attack_scope(
+    target: Target,
+    ceiling: Risk,
+    intrusive: bool,
+    args: argparse.Namespace,
+) -> Path:
+    """Write the one-target engagement that ``relift attack`` runs under.
+
+    The scope file is not a formality: it is the audit artefact that records
+    which host was authorised, by whom, for how long and at what tier. The
+    command removes the setup step, not the record.
+    """
+    addresses = resolve_host(target.host)
+    if not addresses:
+        raise ScopeError(
+            f"{target.host!r} does not resolve. Refusing to attack a name with "
+            "no address."
+        )
+    hosts = list(dict.fromkeys([target.host, *addresses]))
+
+    expires = None
+    if getattr(args, "expires", None):
+        text = str(args.expires)
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        expires = datetime.fromisoformat(text)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+    if expires is None:
+        expires = datetime.now(timezone.utc) + timedelta(hours=24)
+
+    ports = _parse_ports(args.ports) if args.ports else (22, 80, 443, 8000, 8080, 8443)
+    document = build_scope_document(
+        engagement=f"attack {target.host}",
+        # The name and every address it resolves to right now: a name is only
+        # as trustworthy as what it points at during the run.
+        hosts=hosts,
+        authorized_by=args.authorized_by,
+        organization=args.organization,
+        expires=expires,
+        max_risk=ceiling,
+        ports=ports,
+        allow_intrusive=intrusive,
+        notes=f"authored by 'relift attack' for a single target on {utc_stamp()}",
+    )
+
+    path = _attack_scope_path(target.host)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
+def utc_stamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="relift",
@@ -173,6 +285,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--notes", default="")
     p_init.add_argument("--force", action="store_true")
 
+    def _execution_flags(parser: argparse.ArgumentParser, execute: bool) -> None:
+        if execute:
+            parser.add_argument(
+                "--execute", action="store_true", help="actually send traffic"
+            )
+        parser.add_argument("--ports", metavar="LIST")
+        parser.add_argument("--timeout", type=float, default=6.0)
+        parser.add_argument("--insecure", action="store_true")
+        parser.add_argument(
+            "--db-creds",
+            metavar="FILE",
+            help="JSON file of credentials you already hold (intrusive tier)",
+        )
+        parser.add_argument(
+            "--sqli-url",
+            metavar="URL",
+            help="URL with a parameter to test for injection (intrusive tier)",
+        )
+        parser.add_argument(
+            "--sqli-param",
+            metavar="NAME",
+            help="which query parameter --sqli-url should be probed on",
+        )
+
     for name, text in (
         ("plan", "show the ordered run plan without sending traffic"),
         ("scan", "run the plan (dry-run unless --execute)"),
@@ -184,27 +320,33 @@ def _build_parser() -> argparse.ArgumentParser:
         _add_analyst_flags(sub_parser)
         sub_parser.add_argument("--json", action="store_true")
         if name == "scan":
-            sub_parser.add_argument(
-                "--execute", action="store_true", help="actually send traffic"
-            )
-            sub_parser.add_argument("--ports", metavar="LIST")
-            sub_parser.add_argument("--timeout", type=float, default=6.0)
-            sub_parser.add_argument("--insecure", action="store_true")
-            sub_parser.add_argument(
-                "--db-creds",
-                metavar="FILE",
-                help="JSON file of credentials you already hold (intrusive tier)",
-            )
-            sub_parser.add_argument(
-                "--sqli-url",
-                metavar="URL",
-                help="URL with a parameter to test for injection (intrusive tier)",
-            )
-            sub_parser.add_argument(
-                "--sqli-param",
-                metavar="NAME",
-                help="which query parameter --sqli-url should be probed on",
-            )
+            _execution_flags(sub_parser, execute=True)
+
+    p_attack = sub.add_parser(
+        "attack",
+        help="one command: authorise the target, plan and run it",
+        description="Author a one-target, 24-hour engagement for --target, then "
+        "run it. --depth picks how far the run goes: 1 passive, 2 safe, "
+        "3 standard (external tools), 4 intrusive, 5 full. Every run still "
+        "writes a scope file and an audit record.",
+    )
+    p_attack.add_argument("--target", required=True)
+    p_attack.add_argument(
+        "--depth",
+        default="2",
+        metavar="N",
+        help="1-5 or passive|safe|standard|intrusive|full (default: 2, safe)",
+    )
+    p_attack.add_argument(
+        "--scope",
+        help="use an existing scope instead of authoring one for this target",
+    )
+    p_attack.add_argument("--authorized-by", default="Jay")
+    p_attack.add_argument("--organization", default="Pixelcity")
+    p_attack.add_argument("--expires", metavar="ISO8601")
+    _add_analyst_flags(p_attack)
+    p_attack.add_argument("--json", action="store_true")
+    _execution_flags(p_attack, execute=False)
 
     p_report = sub.add_parser("report", help="render a stored run")
     p_report.add_argument("--run", help="run id, or a path to run.json (default: latest)")
@@ -416,7 +558,13 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     target, scope, matched, analyst, audit, profile, _ = _prepare(args)
-    plan = make_plan(target, scope, profile, analyst)
+    plan = make_plan(
+        target,
+        scope,
+        profile,
+        analyst,
+        include_external=getattr(args, "include_external", None),
+    )
     ports = _parse_ports(args.ports) if args.ports else scope.port_set()
 
     credentials: list[dict] = []
@@ -466,6 +614,49 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         print(render_json(payload))
 
     return 1 if any(entry.status == "error" for entry in record.executions) else 0
+
+
+def _cmd_attack(args: argparse.Namespace) -> int:
+    depth, profile, ceiling, intrusive, external = _parse_depth(args.depth)
+    target = Target.parse(args.target)
+
+    if args.scope:
+        scope_path = Path(args.scope).expanduser()
+    else:
+        scope_path = _author_attack_scope(target, ceiling, intrusive, args)
+
+    scope = load_scope(scope_path)
+    name = DEPTH_NAMES[depth]
+
+    print(bold(BANNER))
+    print()
+    print(f"  target   {cyan(target.origin)}")
+    print(
+        f"  depth    {depth}/5 · {bold(name)} · ceiling {scope.max_risk.value}"
+        + (" · external tools" if external else "")
+    )
+    expiry = scope.expires.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    print(f"  scope    {dim(str(scope_path))}  (expires {expiry})")
+    if scope.risk_ceiling(ceiling) is not scope.max_risk:
+        print(
+            yellow(
+                f"  note     scope ceiling lowers this run to "
+                f"{scope.risk_ceiling(ceiling).value}"
+            )
+        )
+    if intrusive and scope.allow_intrusive:
+        print()
+        print(
+            yellow("  intrusive tier: only against hosts you own or are ")
+            + yellow("contracted to test.")
+        )
+    print()
+
+    args.scope = str(scope_path)
+    args.profile = profile
+    args.include_external = external
+    args.execute = True
+    return _cmd_scan(args)
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
@@ -562,6 +753,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return _cmd_plan(args)
     if args.command == "scan":
         return _cmd_scan(args)
+    if args.command == "attack":
+        return _cmd_attack(args)
     if args.command == "report":
         return _cmd_report(args)
     if args.command == "chains":

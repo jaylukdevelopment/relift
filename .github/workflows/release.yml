@@ -101,9 +101,99 @@ jobs:
             dist/${{ matrix.asset }}
             dist/${{ matrix.asset }}.sha256
 
+  desktop:
+    name: desktop (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset: relift-desktop-linux-x64
+          - os: windows-latest
+            asset: relift-desktop-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the Linux window stack
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgirepository1.0-dev libcairo2-dev pkg-config \
+            libgtk-3-0 libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1
+
+      - name: Install package, PyInstaller and the native window
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pyinstaller
+          python -m pip install -e .
+          # The desktop build is a real window, not a launcher for a browser.
+          # Windows uses the WebView2 runtime that ships with Windows 10/11.
+          # Linux bundles PyGObject and uses the host's WebKitGTK/GLib: pinning
+          # PyGObject matters because 3.52+ needs girepository-2.0, which
+          # 22.04 does not ship.
+          python -m pip install pywebview
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            python -m pip install "pygobject==3.50.0"
+          fi
+          python -c "import webview; print('pywebview ok')"
+
+      - name: Build single-file desktop executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The spec keeps host-provided libraries (GLib, GTK, libstdc++) out of
+          # the Linux bundle; bundling the 22.04 copies breaks WebKitGTK on a
+          # current distribution. See the comment at the top of the spec.
+          python -m PyInstaller --clean --noconfirm \
+            --distpath dist packaging/relift-desktop.spec
+
+      - name: Rename, smoke-test and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            SRC="dist/relift-desktop.exe"
+          else
+            SRC="dist/relift-desktop"
+          fi
+          mv "$SRC" "dist/${{ matrix.asset }}"
+          # --no-window proves the server; the banner proves the binary found a
+          # native backend rather than silently falling back to a browser.
+          ( "dist/${{ matrix.asset }}" --no-window --port 18999 > "$RUNNER_TEMP/desktop.log" 2>&1 ) &
+          pid=$!
+          sleep 4
+          curl -fsS http://127.0.0.1:18999/ | grep -q RELIFT_BOOT
+          curl -fsS http://127.0.0.1:18999/app.js > /dev/null
+          kill "$pid" || true
+          cat "$RUNNER_TEMP/desktop.log"
+          python - <<'PY'
+          import pathlib
+          blob = pathlib.Path("dist/${{ matrix.asset }}").read_bytes()
+          assert b"splash.html" in blob, "splash asset missing from the bundle"
+          print("splash asset bundled")
+          PY
+          sha256sum "dist/${{ matrix.asset }}" > "dist/${{ matrix.asset }}.sha256"
+          cat "dist/${{ matrix.asset }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.sha256
+
   publish:
     name: publish release
-    needs: [dist, binary]
+    needs: [dist, binary, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

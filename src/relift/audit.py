@@ -104,6 +104,8 @@ def write_run(record: Any, base: str | Path | None = None) -> Path:
 def find_run(ref: str | None = None, base: str | Path | None = None) -> Path:
     """Resolve a run reference: an id, a path to run.json, or None for the latest."""
     root = runs_root(base)
+    if str(ref or "").strip().lower() in ("", "latest", "last"):
+        ref = None
     if ref:
         candidate = Path(ref).expanduser()
         if candidate.is_file():

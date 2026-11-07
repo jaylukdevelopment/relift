@@ -55,6 +55,7 @@ def make_plan(
     scope: Scope,
     profile_name: str,
     analyst: Any = None,
+    include_external: bool | None = None,
 ) -> Plan:
     """Build the plan: profile ∩ scope ceiling, optionally reordered by the analyst."""
     profile = catalog.PROFILES.get(profile_name)
@@ -65,7 +66,10 @@ def make_plan(
 
     ceiling = scope.risk_ceiling(profile.max_risk)
     specs = catalog.select(
-        profile_name, max_risk=ceiling, families=target.families
+        profile_name,
+        max_risk=ceiling,
+        include_external=include_external,
+        families=target.families,
     )
     # A plan is what will actually run: design-only entries stay in 'list' but
     # never appear here; the narrative is written at render time and the chain

@@ -7,7 +7,7 @@ import json
 import pytest
 
 from relift import __version__, catalog
-from relift.cli import main
+from relift.cli import _parse_depth, main
 
 
 def test_list_json_matches_the_catalogue(capsys):
@@ -148,6 +148,66 @@ def test_chains_command_renders_a_stored_run(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_id"] == "unit-run"
     assert [chain["id"] for chain in payload["chains"]] == ["thread.datastore-no-auth"]
+
+
+def test_run_reference_latest_resolves_to_the_newest_run(tmp_path, monkeypatch, capsys):
+    run_dir = tmp_path / "runs" / "20260101-000000-aaaa"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "20260101-000000-aaaa",
+                "target": {"raw": "https://example.test/"},
+                "findings": [],
+                "chains": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RELIFT_RUNS_DIR", str(tmp_path / "runs"))
+    assert main(["--no-color", "chains", "--run", "latest", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run_id"] == "20260101-000000-aaaa"
+
+
+def test_attack_depth_accepts_numbers_and_names():
+    assert _parse_depth("1")[1] == "passive"
+    assert _parse_depth("passive")[1] == "passive"
+    assert _parse_depth("4")[2].value == "intrusive"
+    assert _parse_depth("full")[3] is True  # intrusive
+    assert _parse_depth("full")[4] is True  # external tools
+    with pytest.raises(ValueError):
+        _parse_depth("9")
+
+
+def test_attack_authors_a_scope_and_runs(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RELIFT_SCOPE_DIR", str(tmp_path / "scopes"))
+    code = main(
+        ["--no-color", "attack", "--target", "http://127.0.0.1:9", "--depth", "1", "--no-ai"]
+    )
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "depth    1/5" in output
+    scopes = list((tmp_path / "scopes").glob("*.json"))
+    assert len(scopes) == 1
+    document = json.loads(scopes[0].read_text(encoding="utf-8"))
+    assert document["acknowledge_authorization"] is True
+    assert "127.0.0.1" in document["allowed_hosts"]
+    assert document["allowed_hosts"].count("127.0.0.1") == 1
+    assert document["max_risk"] == "passive"
+    assert document["allow_intrusive"] is False
+
+
+def test_attack_intrusive_depth_authorises_the_intrusive_ceiling(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RELIFT_SCOPE_DIR", str(tmp_path / "scopes"))
+    code = main(
+        ["--no-color", "attack", "--target", "http://127.0.0.1:9", "--depth", "4", "--no-ai"]
+    )
+    assert code == 0
+    assert "intrusive tier" in capsys.readouterr().out
+    document = json.loads(next((tmp_path / "scopes").glob("*.json")).read_text(encoding="utf-8"))
+    assert document["max_risk"] == "intrusive"
+    assert document["allow_intrusive"] is True
 
 
 def test_no_subcommand_prints_help(capsys):
