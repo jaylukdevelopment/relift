@@ -9,10 +9,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .models import AttackSpec, Risk, RISK_RANK
+from .models import RISK_RANK, AttackSpec, Risk
 
 # Category display order. Least invasive first, so a run reads top-down.
-CATEGORY_ORDER = ("recon", "tls", "web", "auth", "report")
+CATEGORY_ORDER = (
+    "recon",
+    "tls",
+    "web",
+    "db",
+    "system",
+    "auth",
+    "analysis",
+    "report",
+)
+
+# Every family a technique may be planned against.
+ALL_FAMILIES = ("http", "db", "ssh", "host")
 
 _SPECS: tuple[AttackSpec, ...] = (
     # ---------------------------------------------------------------- recon
@@ -21,6 +33,7 @@ _SPECS: tuple[AttackSpec, ...] = (
         name="DNS resolution & address inventory",
         category="recon",
         risk=Risk.PASSIVE,
+        families=ALL_FAMILIES,
         summary="Resolve A/AAAA records and classify the address space "
                 "(loopback, RFC1918, CGNAT, public).",
         produces=("addresses", "address_class", "cname"),
@@ -46,6 +59,7 @@ _SPECS: tuple[AttackSpec, ...] = (
         name="TCP connect sweep",
         category="recon",
         risk=Risk.SAFE,
+        families=("http", "db", "ssh"),
         summary="Full TCP handshakes against the operator's port list. Logged by "
                 "the target by design; this is not a stealth tool.",
         produces=("open_ports", "banners"),
@@ -58,6 +72,7 @@ _SPECS: tuple[AttackSpec, ...] = (
         name="Service/version detection",
         category="recon",
         risk=Risk.SAFE,
+        families=("http", "db", "ssh"),
         summary="Version probing over the same port list via nmap -sV. Turns "
                 "'port open' into 'which daemon'.",
         requires=("nmap",),
@@ -183,6 +198,24 @@ _SPECS: tuple[AttackSpec, ...] = (
         notes="Intrusive: expect WAF/IDS reaction and real log noise.",
     ),
     AttackSpec(
+        id="web.sql_injection_check",
+        name="SQL injection detection (bounded)",
+        category="web",
+        risk=Risk.INTRUSIVE,
+        families=("http",),
+        summary="Three bounded probes against one operator-named parameter: an "
+                "error signature, a boolean differential, and one capped time "
+                "delay. Detection only — no UNION, no stacked queries, no data "
+                "extraction, no file or command primitives.",
+        produces=("injectable", "injection_style", "dbms_hint"),
+        ai_hint="Report the parameter and the technique that proved it. Never "
+                "include a payload in the narrative, and never claim a DBMS you "
+                "did not see in an error signature.",
+        mitre="T1190",
+        notes="Intrusive tier, lab only. Fixed payload set; no flag accepts a "
+              "user-supplied payload, by design.",
+    ),
+    AttackSpec(
         id="web.dir_bruteforce",
         name="Directory brute-force",
         category="web",
@@ -194,20 +227,104 @@ _SPECS: tuple[AttackSpec, ...] = (
         mitre="T1083",
         notes="Design-only: needs a wordlist policy and rate budget first.",
     ),
+    # ------------------------------------------------------------------- db
+    AttackSpec(
+        id="db.fingerprint",
+        name="Database protocol fingerprint",
+        category="db",
+        risk=Risk.SAFE,
+        families=("db",),
+        summary="Speaks each engine's real wire protocol — PostgreSQL startup, "
+                "MySQL handshake, TDS pre-login, Redis PING/INFO, MongoDB hello, "
+                "Elasticsearch/CouchDB root — and records version, build and "
+                "transport facts. No authentication is attempted.",
+        produces=("engine", "version", "auth_method", "tls_capable"),
+        ai_hint="An engine version is only useful next to its support window. Do "
+                "not claim a CVE from a version string; describe the exposure and "
+                "the upgrade path.",
+        mitre="T1592",
+    ),
+    AttackSpec(
+        id="db.security_config",
+        name="Database security configuration audit",
+        category="db",
+        risk=Risk.SAFE,
+        families=("db",),
+        summary="Whether the listener demands authentication at all, which auth "
+                "method it negotiated (trust / md5 / cleartext / SCRAM), whether "
+                "TLS is possible, and whether the build is past end-of-life. "
+                "Read-only protocol exchanges only.",
+        produces=("auth_required", "auth_method", "cleartext_auth", "eol"),
+        ai_hint="'No authentication required' on a reachable datastore is a "
+                "critical finding, not a hardening note.",
+        mitre="T1595.002",
+    ),
+    AttackSpec(
+        id="db.credential_verify",
+        name="Database credential verification",
+        category="db",
+        risk=Risk.INTRUSIVE,
+        families=("db",),
+        summary="Verifies credentials the operator already holds, exactly one "
+                "login attempt per entry, then reads that account's privilege "
+                "level. Never a wordlist, never a spray: a lockout here would be "
+                "an outage you caused.",
+        produces=("login_ok", "privilege_level", "role_attributes"),
+        ai_hint="A working credential is only interesting together with what it "
+                "can reach. Pair it with the target's exposure, not with a "
+                "generic 'weak password' claim.",
+        mitre="T1078",
+        notes="Intrusive tier. Requires --db-creds AND --profile lab. One attempt "
+              "per credential; no retry loop exists.",
+    ),
+    # --------------------------------------------------------------- system
+    AttackSpec(
+        id="system.host_audit",
+        name="Local privilege-escalation surface",
+        category="system",
+        risk=Risk.SAFE,
+        families=("host",),
+        summary="Read-only audit of the machine Relift runs on: kernel and OS "
+                "build, SUID/SGID binaries, world-writable PATH entries, sudo "
+                "rules that are readable, file capabilities, container socket "
+                "access and listening sockets.",
+        produces=("suid", "capabilities", "sudo_rules", "kernel", "sockets"),
+        ai_hint="Report the escalation surface, never a claimed exploit. 'Kernel "
+                "5.15 is below the fixed release for CVE-2022-0847' is a "
+                "sentence; 'you can root this box' is not.",
+        mitre="T1082",
+        notes="Reads local configuration only. Takes no action, installs nothing, "
+              "and changes no file.",
+    ),
+    # --------------------------------------------------------------- analysis
+    AttackSpec(
+        id="analysis.attack_chains",
+        name="Attack-thread correlation",
+        category="analysis",
+        risk=Risk.PASSIVE,
+        families=ALL_FAMILIES,
+        summary="Joins the run's findings into multi-stage attack threads: which "
+                "observation becomes initial access, what it unlocks next, and "
+                "the single control that breaks the path.",
+        produces=("chains", "break_points"),
+        ai_hint="A chain is only real when every stage is backed by a finding in "
+                "this run. Say which stage is the load-bearing one.",
+        mitre="",
+    ),
     # ----------------------------------------------------------------- auth
     AttackSpec(
         id="auth.ssh_algorithms",
         name="SSH algorithm audit",
         category="auth",
         risk=Risk.SAFE,
-        summary="Deprecated KEX, cipher and MAC reporting via ssh-audit.",
-        implemented=False,
-        requires=("ssh-audit",),
-        produces=("kex", "ciphers", "macs"),
+        families=("ssh",),
+        summary="Reads the SSH banner and the server KEXINIT name-lists directly "
+                "over the wire; flags deprecated KEX, host-key, cipher and MAC "
+                "algorithms. No authentication, no session.",
+        produces=("banner", "kex", "host_keys", "ciphers", "macs"),
         ai_hint="Deprecated algorithms matter most on internet-facing SSH, not on "
                 "a lab box behind a jump host.",
         mitre="T1595",
-        notes="Design-only: wrapper pending.",
     ),
     AttackSpec(
         id="auth.password_policy",
@@ -241,6 +358,7 @@ _SPECS: tuple[AttackSpec, ...] = (
         name="Analyst narrative",
         category="report",
         risk=Risk.PASSIVE,
+        families=ALL_FAMILIES,
         summary="Executive summary, grouped technical section and a fix-first "
                 "list, from the run's findings. AI when available, rule engine "
                 "otherwise. Never modifies findings.",
@@ -308,6 +426,7 @@ def select(
     profile_name: str = DEFAULT_PROFILE,
     max_risk: Risk | None = None,
     include_external: bool | None = None,
+    families: tuple[str, ...] | None = None,
 ) -> list[AttackSpec]:
     """Return the ordered catalogue subset allowed by a profile and a scope.
 
@@ -332,6 +451,8 @@ def select(
             continue
         if item.external and not want_external:
             continue
+        if families is not None and not set(item.families) & set(families):
+            continue
         chosen.append(item)
 
     cat_index = {name: i for i, name in enumerate(CATEGORY_ORDER)}
@@ -349,3 +470,13 @@ def summary_line() -> str:
         f"{total} techniques · {ready} ready · {ext} external "
         f"· {design} design-only / excluded"
     )
+
+
+def counts() -> dict[str, int]:
+    """Totals used by the CLI, CI and the desktop header."""
+    return {
+        "total": len(_SPECS),
+        "implemented": sum(1 for s in _SPECS if s.implemented),
+        "external": sum(1 for s in _SPECS if s.implemented and s.external),
+        "design_only": sum(1 for s in _SPECS if not s.implemented),
+    }

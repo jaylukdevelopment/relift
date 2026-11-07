@@ -11,6 +11,7 @@ import socket
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,6 +25,10 @@ USER_AGENT = "Relift/0.1 (+authorized-assessment; pixelcity)"
 
 class MissingTool(RuntimeError):
     """An external binary the catalogue says we need is not installed."""
+
+
+class MissingInput(RuntimeError):
+    """A module needs operator input it was not given (a parameter, a credential)."""
 
 
 @dataclass
@@ -51,6 +56,73 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 @dataclass
+class TCPConn:
+    """A bounded TCP conversation: exact reads, hard caps, no unbounded waits.
+
+    Every database module speaks through one of these so the rate limit, the
+    timeout and the dry-run switch apply to protocol work exactly as they do to
+    an HTTP request.
+    """
+
+    sock: Any
+    host: str
+    port: int
+    limit: int = 1024 * 1024
+    _read: int = field(default=0, repr=False)
+
+    def send(self, payload: bytes) -> None:
+        if len(payload) > self.limit:
+            raise OSError("refusing to send an oversized probe")
+        self.sock.sendall(payload)
+
+    def recv_exact(self, count: int) -> bytes:
+        """Read exactly ``count`` bytes or raise; used by length-prefixed frames."""
+        chunks: list[bytes] = []
+        remaining = count
+        while remaining > 0:
+            chunk = self.sock.recv(remaining)
+            if not chunk:
+                raise OSError("peer closed the connection mid-frame")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+            self._read += len(chunk)
+            if self._read > self.limit:
+                raise OSError("refusing to read an oversized response")
+        return b"".join(chunks)
+
+    def recv_some(self, count: int = 4096) -> bytes:
+        chunk = self.sock.recv(min(count, self.limit - self._read) or 1)
+        self._read += len(chunk)
+        if self._read > self.limit:
+            raise OSError("refusing to read an oversized response")
+        return chunk
+
+    def recv_until(self, marker: bytes, cap: int = 65536) -> bytes:
+        """Read until ``marker`` appears. Used by line-oriented protocols."""
+        buffer = b""
+        while marker not in buffer:
+            if len(buffer) > cap:
+                raise OSError("marker not found within the read cap")
+            chunk = self.recv_some(4096)
+            if not chunk:
+                break
+            buffer += chunk
+        return buffer
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def __enter__(self) -> TCPConn:
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+
+@dataclass
 class ScanContext:
     """Everything a module is allowed to touch."""
 
@@ -61,6 +133,12 @@ class ScanContext:
     insecure: bool = False
     dry_run: bool = False
     audit: Any = None
+    # Operator-supplied credentials, already validated by the CLI. Each entry
+    # is {"username", "password", "engine", "host", "port", "note"}.
+    db_creds: list[dict[str, Any]] = field(default_factory=list)
+    # Operator-named injection point for web.sql_injection_check.
+    inject_url: str = ""
+    inject_param: str = ""
     _last_net: float = field(default=0.0, repr=False)
 
     # -- budgeting ---------------------------------------------------------
@@ -76,8 +154,43 @@ class ScanContext:
         self._last_net = time.monotonic()
 
     # -- HTTP --------------------------------------------------------------
-    def http_get(self, path: str = "/", method: str = "GET") -> HttpResponse:
+    def http_get(
+        self, path: str = "/", method: str = "GET", scheme: str | None = None
+    ) -> HttpResponse:
+        """Request on the target origin. ``scheme`` overrides a db:// scheme
+        for HTTP-speaking datastores (Elasticsearch, CouchDB)."""
         url = self.target.url(path)
+        override = (scheme or "").strip().lower()
+        if override in ("http", "https"):
+            default = 443 if override == "https" else 80
+            authority = (
+                self.target.host
+                if self.target.port == default
+                else f"{self.target.host}:{self.target.port}"
+            )
+            url = f"{override}://{authority}" + (
+                path if path.startswith("/") else "/" + path
+            )
+        return self._fetch(url, method)
+
+    def http_get_url(self, url: str, method: str = "GET") -> HttpResponse:
+        """Fetch an absolute URL, but only on the authorised target host.
+
+        Redirects and operator-supplied URLs are the two ways an assessment tool
+        gets pointed at a stranger's server. Anything whose host is not the
+        target is refused before a socket is opened.
+        """
+        parts = urllib.parse.urlsplit(url)
+        if (parts.hostname or "").casefold() != self.target.host.casefold():
+            return HttpResponse(
+                url=url,
+                error=f"refused: {parts.hostname!r} is not the authorised target host",
+            )
+        if (parts.scheme or "").lower() not in ("http", "https"):
+            return HttpResponse(url=url, error=f"refused: scheme {parts.scheme!r}")
+        return self._fetch(url, method)
+
+    def _fetch(self, url: str, method: str = "GET") -> HttpResponse:
         if self.dry_run:
             return HttpResponse(url=url, error="dry-run: request not sent")
         self.throttle()
@@ -122,7 +235,23 @@ class ScanContext:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
 
-    # -- TCP ---------------------------------------------------------------
+    # -- raw TCP -----------------------------------------------------------
+    def db_connect(self, port: int | None = None) -> TCPConn:
+        """Open a bounded connection for protocol work. Never used in dry-run."""
+        if self.dry_run:
+            raise OSError("dry-run: connection not opened")
+        target_port = int(port or self.target.port)
+        self.throttle()
+        sock = socket.create_connection(
+            (self.target.host, target_port), timeout=self.timeout
+        )
+        sock.settimeout(self.timeout)
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        return TCPConn(sock=sock, host=self.target.host, port=target_port)
+
     def tcp_probe(self, port: int) -> tuple[bool, str]:
         """Connect and read whatever the service says first. Never writes."""
         if self.dry_run:

@@ -59,6 +59,10 @@ class AttackSpec:
     risk: Risk
     summary: str
     implemented: bool = True
+    # Which target families the technique is meaningful for. A target exposes
+    # the families it belongs to (a plain https origin is just ``http``; an
+    # Elasticsearch endpoint is both ``http`` and ``db``).
+    families: tuple[str, ...] = ("http",)
     requires: tuple[str, ...] = ()
     produces: tuple[str, ...] = ()
     ai_hint: str = ""
@@ -86,6 +90,7 @@ class AttackSpec:
             "risk": self.risk.value,
             "summary": self.summary,
             "implemented": self.implemented,
+            "families": list(self.families),
             "requires": list(self.requires),
             "produces": list(self.produces),
             "ai_hint": self.ai_hint,
@@ -95,9 +100,69 @@ class AttackSpec:
         }
 
 
+# Scheme → default port. Anything not listed is refused at parse time.
+SCHEME_PORTS = {
+    "http": 80,
+    "https": 443,
+    "local": 0,
+    "ssh": 22,
+    "postgres": 5432,
+    "postgresql": 5432,
+    "mysql": 3306,
+    "mariadb": 3306,
+    "redis": 6379,
+    "rediss": 6379,
+    "mongodb": 27017,
+    "mssql": 1433,
+    "sqlserver": 1433,
+    "tds": 1433,
+    "elasticsearch": 9200,
+    "opensearch": 9200,
+    "es": 9200,
+    "couchdb": 5984,
+}
+
+# Several spellings describe the same engine. Normalised once, here.
+ENGINE_ALIASES = {
+    "postgresql": "postgres",
+    "mariadb": "mysql",
+    "rediss": "redis",
+    "sqlserver": "mssql",
+    "tds": "mssql",
+    "es": "elasticsearch",
+    "opensearch": "elasticsearch",
+    "sqlite": "sqlite",
+}
+
+# Engines that speak HTTP and therefore also deserve the web.* techniques.
+HTTP_DATABASES = ("elasticsearch", "couchdb")
+
+DATABASE_ENGINES = (
+    "postgres",
+    "mysql",
+    "redis",
+    "mongodb",
+    "mssql",
+    "elasticsearch",
+    "couchdb",
+)
+
+
+def database_engine(scheme: str) -> str:
+    """Normalise a scheme to a known engine, or return ''."""
+    text = (scheme or "").strip().lower()
+    engine = ENGINE_ALIASES.get(text, text)
+    return engine if engine in DATABASE_ENGINES else ""
+
+
 @dataclass(frozen=True)
 class Target:
-    """A parsed target. Port and scheme are always explicit after parsing."""
+    """A parsed target. Port and scheme are always explicit after parsing.
+
+    Three kinds exist: an HTTP origin (``http``/``https``), a database endpoint
+    (``postgres://``, ``mysql://``, ``redis://``, ...) and the local host
+    (``local://``) that the host audit reads. ``engine`` is empty for plain HTTP.
+    """
 
     raw: str
     scheme: str
@@ -106,16 +171,21 @@ class Target:
     path: str = "/"
 
     @classmethod
-    def parse(cls, raw: str) -> "Target":
+    def parse(cls, raw: str) -> Target:
         text = (raw or "").strip()
         if not text:
             raise ValueError("empty target")
+        if text.lower() in ("local", "local://", "host://"):
+            return cls(raw=raw, scheme="local", host="127.0.0.1", port=0, path="/")
         if "://" not in text:
             text = "https://" + text
         parts = urlsplit(text)
         scheme = (parts.scheme or "https").lower()
-        if scheme not in ("http", "https"):
-            raise ValueError(f"unsupported scheme {scheme!r} (use http or https)")
+        if scheme not in SCHEME_PORTS:
+            raise ValueError(
+                f"unsupported scheme {scheme!r}; use http, https, local or one "
+                f"of: {', '.join(sorted(set(SCHEME_PORTS) - {'http', 'https', 'local'}))}"
+            )
         host = parts.hostname or ""
         if not host:
             raise ValueError(f"could not find a host in {raw!r}")
@@ -123,11 +193,45 @@ class Target:
             explicit_port = parts.port
         except ValueError as exc:  # malformed port in the URL
             raise ValueError(f"bad port in {raw!r}: {exc}") from exc
-        port = explicit_port or (443 if scheme == "https" else 80)
+        port = explicit_port or SCHEME_PORTS[scheme]
         path = parts.path or "/"
         if parts.query:
             path = f"{path}?{parts.query}"
         return cls(raw=raw, scheme=scheme, host=host, port=port, path=path)
+
+    @property
+    def engine(self) -> str:
+        """Normalised database engine, or '' when the target is not a database."""
+        return database_engine(self.scheme)
+
+    @property
+    def kind(self) -> str:
+        if self.scheme == "local":
+            return "host"
+        if self.scheme == "ssh":
+            return "ssh"
+        if self.engine and self.engine not in HTTP_DATABASES:
+            return "db"
+        return "http"
+
+    @property
+    def families(self) -> tuple[str, ...]:
+        """Target families a technique may target."""
+        if self.kind == "host":
+            return ("host",)
+        if self.kind == "ssh":
+            return ("ssh",)
+        if self.engine in HTTP_DATABASES:
+            return ("http", "db")
+        if self.kind == "db":
+            return ("db",)
+        return ("http",)
+
+    @property
+    def database_name(self) -> str:
+        """Path segment used as the database name, if one was given."""
+        name = (self.path or "").strip("/")
+        return name if self.kind == "db" else ""
 
     def url(self, path: str | None = None) -> str:
         target_path = path if path is not None else self.path
@@ -139,12 +243,20 @@ class Target:
 
     @property
     def origin(self) -> str:
+        if self.kind == "host":
+            return "local://" + self.host
+        if self.kind in ("db", "ssh"):
+            suffix = self.database_name
+            return f"{self.scheme}://{self.host}:{self.port}" + (f"/{suffix}" if suffix else "")
         return self.url("/")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "raw": self.raw,
             "scheme": self.scheme,
+            "engine": self.engine,
+            "kind": self.kind,
+            "families": list(self.families),
             "host": self.host,
             "port": self.port,
             "path": self.path,
@@ -225,6 +337,7 @@ class RunRecord:
     findings: list[Finding] = field(default_factory=list)
     narrative: str = ""
     error: str = ""
+    chains: list[AttackChain] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -241,8 +354,59 @@ class RunRecord:
             "finished": self.finished,
             "executions": [e.to_dict() for e in self.executions],
             "findings": [f.to_dict() for f in self.findings],
+            "chains": [c.to_dict() for c in self.chains],
             "narrative": self.narrative,
             "error": self.error,
+        }
+
+
+@dataclass
+class ChainStep:
+    """One stage of a correlated attack thread."""
+
+    stage: str
+    attack_id: str
+    title: str
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "attack_id": self.attack_id,
+            "title": self.title,
+            "detail": self.detail,
+        }
+
+
+@dataclass
+class AttackChain:
+    """A multi-stage path assembled from findings that exist in this run.
+
+    A chain is an argument, not a capability: it names the stages an attacker
+    would walk and the single control that breaks the path.
+    """
+
+    id: str
+    title: str
+    severity: Severity
+    summary: str
+    stages: list[ChainStep] = field(default_factory=list)
+    break_at: str = ""
+    confidence: str = "medium"
+
+    @property
+    def attack_ids(self) -> list[str]:
+        return [step.attack_id for step in self.stages]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "severity": self.severity.value,
+            "summary": self.summary,
+            "stages": [step.to_dict() for step in self.stages],
+            "break_at": self.break_at,
+            "confidence": self.confidence,
         }
 
 

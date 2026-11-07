@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "relift"
-version = "0.1.0"
-description = "Pixelcity red-team orchestration CLI for authorized infrastructure testing"
+version = "0.2.0"
+description = "Pixelcity red-team orchestrator for authorized infrastructure testing"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Jay (Pixelcity)" }]
-keywords = ["security", "red-team", "pentest", "cli", "pixelcity"]
+keywords = ["security", "red-team", "pentest", "cli", "database-audit", "pixelcity"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: Information Technology",
@@ -18,13 +18,16 @@ classifiers = [
     "Topic :: Security",
 ]
 license = { text = "Proprietary - all rights reserved" }
+# The engine, the CLI and the desktop backend are stdlib-only on purpose.
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "ruff>=0.6"]
+desktop = ["pywebview>=4"]
 
 [project.scripts]
 relift = "relift.cli:entry"
+relift-desktop = "relift.desktop:main"
 
 [project.urls]
 Homepage = "https://github.com/jaylukdevelopment/relift"
@@ -35,4 +38,23 @@ Issues = "https://github.com/jaylukdevelopment/relift/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-relift = ["py.typed"]
+relift = ["py.typed", "desktop/*.html", "desktop/*.css", "desktop/*.js"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Deliberately small: correctness (F, E, W), import order (I), and the
+# bugbear/upgrade rules that have caught real defects here.
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Modules must never raise; a bare swallow with a comment is the contract.
+"src/relift/modules/*.py" = ["S110"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:relift.*"]

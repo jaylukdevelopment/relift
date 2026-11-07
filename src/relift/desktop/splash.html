@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<!--
+  Relift desktop — startup splash.
+
+  Loaded from disk into a frameless window before the API exists, so this file
+  must never reference the network: no CDN, no webfont, no image. Everything is
+  inline and finishes in under two seconds.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="dark">
+  <title>Relift</title>
+  <style>
+    :root {
+      --bg: #0a0b0d;
+      --line: #262b34;
+      --text: #dfe3e9;
+      --muted: #8b949f;
+      --faint: #5b636e;
+      --accent: #f0a35e;
+      --mono: ui-monospace, "Cascadia Mono", "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 12px/1.5 var(--mono);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      padding: 18px 22px 20px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      user-select: none;
+      cursor: default;
+    }
+    .meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .meta b { color: var(--muted); font-weight: 500; }
+
+    .core {
+      display: grid;
+      place-content: center;
+      gap: 18px;
+      justify-items: center;
+    }
+    .word {
+      display: flex;
+      gap: 2px;
+      font-size: 40px;
+      font-weight: 600;
+      letter-spacing: 0.26em;
+      text-indent: 0.26em;
+      color: var(--text);
+    }
+    .word span {
+      opacity: 0;
+      transform: translateY(8px);
+      animation: rise 620ms cubic-bezier(.16,1,.3,1) forwards;
+    }
+    .word span:nth-child(1) { animation-delay: 60ms; }
+    .word span:nth-child(2) { animation-delay: 130ms; }
+    .word span:nth-child(3) { animation-delay: 200ms; }
+    .word span:nth-child(4) { animation-delay: 270ms; }
+    .word span:nth-child(5) { animation-delay: 340ms; }
+    .word span:nth-child(6) { animation-delay: 410ms; }
+    .word i { font-style: normal; color: var(--accent); }
+
+    .track {
+      position: relative;
+      width: 236px;
+      height: 2px;
+      background: #1b2027;
+      overflow: hidden;
+    }
+    .track::after {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 42%;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      animation: sweep 1.15s cubic-bezier(.55,0,.45,1) infinite;
+    }
+    .ticks {
+      display: flex;
+      gap: 6px;
+      margin-top: -8px;
+      color: var(--faint);
+      font-size: 9px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    .ticks span { opacity: 0; animation: fade 900ms ease forwards; }
+    .ticks span:nth-child(1) { animation-delay: 300ms; }
+    .ticks span:nth-child(2) { animation-delay: 460ms; }
+    .ticks span:nth-child(3) { animation-delay: 620ms; }
+    .ticks span.on { color: var(--accent); }
+
+    .status {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .status .dot {
+      display: inline-block;
+      width: 5px; height: 5px;
+      margin-right: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 1.05s ease-in-out infinite;
+    }
+
+    @keyframes rise { to { opacity: 1; transform: none; } }
+    @keyframes fade { to { opacity: 1; } }
+    @keyframes sweep {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(340%); }
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: .25; }
+      50% { opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .word span, .ticks span { opacity: 1; transform: none; animation: none; }
+      .track::after { animation-duration: 2.4s; }
+      .status .dot { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="meta">
+    <span><b>Pixelcity</b> / red team</span>
+    <span id="version">v0.2.0</span>
+  </div>
+
+  <div class="core">
+    <div class="word" aria-label="Relift">
+      <span>R</span><span>E</span><span>L</span><span>I</span><span>F</span><span>T<i>.</i></span>
+    </div>
+    <div class="track" role="progressbar" aria-label="Starting"></div>
+    <div class="ticks">
+      <span class="on">scope gate</span>
+      <span class="on">engine</span>
+      <span>console</span>
+    </div>
+  </div>
+
+  <div class="status">
+    <span><span class="dot"></span><span id="line">binding 127.0.0.1</span></span>
+    <span id="note">authorized targets only</span>
+  </div>
+
+  <script>
+    (function () {
+      var lines = [
+        "binding 127.0.0.1",
+        "loading scope gate",
+        "starting engine",
+        "opening console"
+      ];
+      var node = document.getElementById("line");
+      var ticks = document.querySelectorAll(".ticks span");
+      var step = 0;
+      var timer = setInterval(function () {
+        step += 1;
+        if (step < lines.length) {
+          node.textContent = lines[step];
+        }
+        if (step === 1 && ticks[2]) {
+          ticks[2].classList.add("on");
+        }
+        if (step >= lines.length) {
+          clearInterval(timer);
+        }
+      }, 380);
+    })();
+  </script>
+</body>
+</html>

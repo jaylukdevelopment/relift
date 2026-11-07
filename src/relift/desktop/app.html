@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<!--
+  Relift desktop — operator console.
+
+  This file is presentation only. Nothing here can reach a target: every action
+  goes through /api, and the server is the only component that loads a scope,
+  authorises a host and runs a module. The UI cannot widen or bypass the scope
+  gate, which is why it can be served to a browser at all.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Relift</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">RELIFT</span>
+      <span class="ver" id="version">v0.2.0</span>
+      <span class="sub">authorized assessment</span>
+    </div>
+    <div class="gate" id="gate" title="Scope gate">
+      <span class="gate-dot" id="gate-dot"></span>
+      <span id="gate-text">no scope loaded</span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="rail" id="rail" aria-label="Sections">
+      <button type="button" class="tab" data-tab="scan">Scan</button>
+      <button type="button" class="tab" data-tab="runs">Runs</button>
+      <button type="button" class="tab" data-tab="catalogue">Catalogue</button>
+      <button type="button" class="tab" data-tab="scope">Scope</button>
+      <button type="button" class="tab" data-tab="audit">Audit</button>
+      <button type="button" class="tab" data-tab="settings">Settings</button>
+      <div class="rail-foot">
+        <span>Nothing runs outside the allow list.</span>
+      </div>
+    </nav>
+
+    <main id="main">
+      <div class="banner" id="banner" hidden role="alert">
+        <span id="banner-text"></span>
+        <button type="button" class="banner-close" id="banner-close" aria-label="Dismiss">dismiss</button>
+      </div>
+
+      <!-- ------------------------------------------------------------ scan -->
+      <section class="pane" id="pane-scan" data-pane="scan">
+        <div class="pane-head">
+          <h1>Scan</h1>
+          <p class="hint">
+            Planning is free and sends nothing. A run executes the same engine as
+            <code>relift scan --execute</code>, against the loaded scope only.
+          </p>
+        </div>
+
+        <form class="grid" id="scan-form" autocomplete="off">
+          <label class="field span2">
+            Target
+            <input id="scan-target" spellcheck="false" placeholder="postgres://127.0.0.1:5432/app">
+          </label>
+          <label class="field">
+            Profile
+            <select id="scan-profile"></select>
+          </label>
+          <label class="field span2">
+            Scope file
+            <div class="row">
+              <input id="scan-scope" spellcheck="false" placeholder="scope.json">
+              <button type="button" class="btn" id="scope-load">Load</button>
+            </div>
+          </label>
+          <label class="field">
+            Timeout (s)
+            <input id="scan-timeout" type="number" min="1" max="60" step="1" value="6">
+          </label>
+          <label class="field">
+            Ports
+            <input id="scan-ports" spellcheck="false" placeholder="from scope">
+          </label>
+          <label class="field check">
+            <input type="checkbox" id="scan-insecure">
+            Accept invalid TLS
+          </label>
+          <div class="field span2">
+            <span class="label">Scope state</span>
+            <span class="hint" id="scan-scope-state">no scope loaded</span>
+          </div>
+
+          <details class="span3 advanced">
+            <summary>Advanced — held credentials and injection point</summary>
+            <div class="grid inner">
+              <label class="field span3">
+                Credential JSON (parsed in the page, sent once, never stored)
+                <textarea id="scan-creds" rows="5" spellcheck="false" placeholder='{"credentials":[{"engine":"postgres","username":"app","password":"…","database":"appdb"}]}'></textarea>
+              </label>
+              <label class="field span2">
+                Injection URL
+                <input id="scan-sqli-url" spellcheck="false" placeholder="https://lab.internal/items?q=1">
+              </label>
+              <label class="field">
+                Parameter
+                <input id="scan-sqli-param" spellcheck="false" placeholder="q">
+              </label>
+            </div>
+          </details>
+
+          <div class="span3 actions">
+            <button type="button" class="btn" id="scan-plan">Plan</button>
+            <button type="button" class="btn primary" id="scan-run" disabled>Run scan</button>
+            <span class="hint" id="scan-run-why">load a scope to enable a run</span>
+            <span class="spinner" id="scan-spinner" hidden></span>
+          </div>
+        </form>
+
+        <div id="scan-output"></div>
+      </section>
+
+      <!-- ------------------------------------------------------------- run -->
+      <section class="pane" id="pane-run" data-pane="run" hidden>
+        <div class="pane-head">
+          <div class="row between">
+            <h1 id="run-title">Run</h1>
+            <div class="row">
+              <button type="button" class="btn" id="run-narrate">Regenerate narrative</button>
+              <button type="button" class="btn" id="run-copy">Copy markdown report</button>
+              <button type="button" class="btn" id="run-close">Close</button>
+            </div>
+          </div>
+          <p class="hint" id="run-meta"></p>
+        </div>
+        <div class="sevrow" id="run-severities"></div>
+        <h2>Findings</h2>
+        <div id="run-findings"></div>
+        <h2>Attack threads</h2>
+        <p class="hint" id="run-threads-note"></p>
+        <div id="run-threads"></div>
+        <details class="narrative" id="run-narrative-wrap">
+          <summary>Analyst narrative</summary>
+          <pre id="run-narrative"></pre>
+        </details>
+        <div id="run-report-fallback"></div>
+      </section>
+
+      <!-- ------------------------------------------------------- catalogue -->
+      <section class="pane" id="pane-catalogue" data-pane="catalogue" hidden>
+        <div class="pane-head">
+          <h1>Catalogue</h1>
+          <p class="hint">
+            Every technique the engine can plan. A row marked design-only has a
+            specification but no module in this build.
+          </p>
+        </div>
+        <div class="filters">
+          <label class="field">
+            Category
+            <select id="cat-category"></select>
+          </label>
+          <label class="field grow">
+            Search
+            <input id="cat-search" spellcheck="false" placeholder="db, redis, injection…">
+          </label>
+          <span class="hint" id="cat-count"></span>
+        </div>
+        <div id="cat-table"></div>
+        <div id="cat-detail" hidden></div>
+      </section>
+
+      <!-- ----------------------------------------------------------- scope -->
+      <section class="pane" id="pane-scope" data-pane="scope" hidden>
+        <div class="pane-head">
+          <h1>Scope</h1>
+          <p class="hint">
+            A scope file is the authorisation. It names the hosts, the risk
+            ceiling, an expiry date and who signed it; its SHA-256 is recorded in
+            the audit log and in every run artefact. Nothing outside
+            <code>allowed_hosts</code> can be touched, and deny rules always win.
+          </p>
+        </div>
+
+        <div class="split">
+          <form class="grid" id="scope-form" autocomplete="off">
+            <label class="field span2">
+              Engagement
+              <input id="scope-engagement" placeholder="homelab-2026-11" spellcheck="false">
+            </label>
+            <label class="field">
+              Valid for (days)
+              <input id="scope-days" type="number" min="1" max="365" value="30">
+            </label>
+            <label class="field span3">
+              Allowed hosts — one per line
+              <textarea id="scope-hosts" rows="4" spellcheck="false" placeholder="127.0.0.1&#10;10.10.10.0/24&#10;*.lab.internal"></textarea>
+            </label>
+            <label class="field span3">
+              Denied hosts — one per line (always wins)
+              <textarea id="scope-denied" rows="3" spellcheck="false" placeholder="10.10.10.1"></textarea>
+            </label>
+            <label class="field">
+              Max risk
+              <select id="scope-risk">
+                <option value="passive">passive</option>
+                <option value="safe" selected>safe</option>
+              </select>
+            </label>
+            <label class="field">
+              Authorised by
+              <input id="scope-author" value="Jay" spellcheck="false">
+            </label>
+            <label class="field">
+              Organization
+              <input id="scope-org" value="Pixelcity" spellcheck="false">
+            </label>
+            <label class="field span2">
+              Write to
+              <input id="scope-path" value="scope.json" spellcheck="false">
+            </label>
+            <label class="field">
+              Notes
+              <input id="scope-notes" spellcheck="false" placeholder="own lab">
+            </label>
+            <div class="span3 actions">
+              <button type="submit" class="btn primary" id="scope-create">Create scope</button>
+              <span class="hint">intrusive ceilings must be set by hand in the file</span>
+            </div>
+          </form>
+
+          <aside class="side">
+            <h2>Loaded scope</h2>
+            <div id="scope-preview"><p class="empty">No scope loaded.</p></div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ----------------------------------------------------------- runs -->
+      <section class="pane" id="pane-runs" data-pane="runs" hidden>
+        <div class="pane-head">
+          <div class="row between">
+            <h1>Runs</h1>
+            <button type="button" class="btn" id="runs-refresh">Refresh</button>
+          </div>
+          <p class="hint" id="runs-root"></p>
+        </div>
+        <div id="runs-table"></div>
+      </section>
+
+      <!-- ---------------------------------------------------------- audit -->
+      <section class="pane" id="pane-audit" data-pane="audit" hidden>
+        <div class="pane-head">
+          <div class="row between">
+            <h1>Audit</h1>
+            <button type="button" class="btn" id="audit-refresh">Refresh</button>
+          </div>
+          <p class="hint" id="audit-path"></p>
+        </div>
+        <pre class="log" id="audit-log">loading…</pre>
+      </section>
+
+      <!-- ------------------------------------------------------- settings -->
+      <section class="pane" id="pane-settings" data-pane="settings" hidden>
+        <div class="pane-head">
+          <h1>Settings</h1>
+          <p class="hint">
+            Read-only. Provider selection comes from flags, environment and
+            <code>relift.config.json</code>, not from this window.
+          </p>
+        </div>
+        <h2>Analyst providers</h2>
+        <div id="settings-providers"></div>
+        <h2>Paths</h2>
+        <div id="settings-paths"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

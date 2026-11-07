@@ -95,6 +95,17 @@ these are one typo away from a very bad afternoon. CIDRs broader than `/22`
 Two independent switches for tier 3 is deliberate. A tired operator at 2 a.m. should
 not be one flag away from a path brute-force against a client's production site.
 
+### The two intrusive techniques that need the switches
+
+| Technique | What consent looks like | What it can cause |
+|---|---|---|
+| `db.credential_verify` | You hold the credential **and** you are authorised to test that account. It is verification of a secret you already have, never discovery of one. | One failed login per credential. Some engines lock an account after N failures; because this module makes exactly one attempt per `(engine, username)` and has no retry loop, it cannot walk an account into a lockout on its own. Say so in the engagement notes anyway. |
+| `web.sql_injection_check` | The application owner knows a parameter will be probed, and knows the probes are logged. | Six requests at most against one parameter: a quote, a boolean pair, at most two delayed reads. Every one appears in the access log and, depending on the WAF, may appear in an incident queue. No data is read, no statement mutates anything, and the payload set is fixed in the source. |
+
+Neither module has a flag that widens it. There is no `--payload`, no `--wordlist`,
+no `--force`, and no environment variable that changes the probe set. If you need a
+wider probe, that is a different tool and a different conversation.
+
 ## 4. Rate limiting
 
 `rate_limit_rps` is a global budget, not per module. Every network operation in every
@@ -144,6 +155,9 @@ These are not "not yet implemented". They are rejected.
 | Default/vendor credential checks | One step from actual break-in; excluded in every profile |
 | Persistence, lateral movement, C2 | Out of scope for an assessment tool by definition |
 | Data exfiltration or tampering | Destroys the evidence you were asked to produce |
+| Database dumps, `SELECT` against application tables, `mongodump`/`pg_dump` | Proving access is the job; taking the rows with you is an incident |
+| Database writes: `INSERT`/`UPDATE`/`DELETE`/`DROP`, `CONFIG SET`, key creation, `FLUSHALL` | A finding does not require changing a row, and a changed row cannot be undone from a terminal |
+| Schema enumeration (`listDatabases`, `_cat/indices`, `KEYS *`) | Metadata maps are useful to an attacker and rarely needed for the finding; the security posture is visible without them |
 | Wireless / physical / social engineering | Different discipline, different consent model |
 
 If the roadmap ever needs one of these, the answer is a different tool with a

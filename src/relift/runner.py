@@ -7,17 +7,18 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import catalog
+from . import chains as chain_engine
 from .audit import AuditLog
 from .models import (
+    SEVERITY_RANK,
     Execution,
     Finding,
     Risk,
     RunRecord,
-    SEVERITY_RANK,
     Target,
     utcnow,
 )
-from .modules import MODULES, MissingTool, ScanContext, tool_path
+from .modules import MODULES, MissingInput, MissingTool, ScanContext, tool_path
 from .scope import Scope
 
 
@@ -63,13 +64,16 @@ def make_plan(
         )
 
     ceiling = scope.risk_ceiling(profile.max_risk)
-    specs = catalog.select(profile_name, max_risk=ceiling)
+    specs = catalog.select(
+        profile_name, max_risk=ceiling, families=target.families
+    )
     # A plan is what will actually run: design-only entries stay in 'list' but
-    # never appear here, and the narrative is written at render time.
+    # never appear here; the narrative is written at render time and the chain
+    # analysis runs over whatever the modules found.
     specs = [
         spec
         for spec in specs
-        if spec.implemented and spec.category != "report"
+        if spec.implemented and spec.category not in ("report", "analysis")
     ]
 
     note = ""
@@ -131,6 +135,8 @@ def execute(plan: Plan, ctx: ScanContext, audit: AuditLog | None = None) -> RunR
             findings = module.run(ctx) or []
         except MissingTool as exc:
             status, error = "skipped", f"missing tool: {exc}"
+        except MissingInput as exc:
+            status, error = "skipped", f"needs input: {exc}"
         except KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - one bad module must not kill the run
@@ -163,7 +169,22 @@ def execute(plan: Plan, ctx: ScanContext, audit: AuditLog | None = None) -> RunR
 
     record.finished = utcnow()
     record.findings = dedupe(record.findings)
+    record.chains = chain_engine.analyse([item.to_dict() for item in record.findings])
+
+    if audit is not None:
+        audit.event(
+            "chains",
+            run_id=record.run_id,
+            chains=[chain.id for chain in record.chains],
+            worst=record.chains[0].severity.value if record.chains else "none",
+        )
+
     return record
+
+
+def analyse_record(record: RunRecord) -> list[Any]:
+    """Recompute attack threads for a stored run (used by 'relift chains')."""
+    return chain_engine.analyse([item.to_dict() for item in record.findings])
 
 
 def dedupe(findings: list[Finding]) -> list[Finding]:

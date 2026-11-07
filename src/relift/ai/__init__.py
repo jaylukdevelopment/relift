@@ -10,21 +10,15 @@ from typing import Any
 
 from ..config import ai_settings
 from .base import (
+    SYSTEM_PROMPT,
     AIError,
     AIProvider,
     Analyst,
     ProviderInfo,
-    SYSTEM_PROMPT,
     sanitize,
 )
 from .cloud import AnthropicProvider, GroqProvider, OpenAIProvider, OpenRouterProvider
-from .local import (
-    CustomProvider,
-    LlamaCppProvider,
-    LMStudioProvider,
-    OllamaProvider,
-    OpenAICompatibleProvider,
-)
+from .local import CustomProvider, LlamaCppProvider, LMStudioProvider, OllamaProvider
 from .offline import OfflineProvider, rule_narrative
 
 PROVIDER_CLASSES: dict[str, type[AIProvider]] = {
