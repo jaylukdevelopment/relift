@@ -83,7 +83,6 @@ jobs:
         env:
           # A runner image must not send a loopback request through a proxy.
           no_proxy: 127.0.0.1,localhost
-          NO_PROXY: 127.0.0.1,localhost
         run: |
           set -euo pipefail
           python -c "
