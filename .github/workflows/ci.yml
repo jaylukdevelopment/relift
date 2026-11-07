@@ -35,30 +35,76 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install package
+      - name: Install package and test runner
         shell: bash
-        run: python -m pip install -e .
+        run: python -m pip install -e ".[dev]"
 
       - name: Byte-compile every module
         shell: bash
-        run: python -m compileall -q src/relift
+        run: python -m compileall -q src/relift tests
 
-      - name: Catalogue renders and stays complete
+      - name: Lint
+        shell: bash
+        run: ruff check src tests packaging
+
+      - name: Test suite
+        shell: bash
+        run: python -m pytest -q
+
+      - name: Catalogue renders and stays internally consistent
         shell: bash
         run: |
           set -euo pipefail
           relift list
           relift list --json | python -c "
           import json, sys
+          from relift import catalog
+          from relift.modules import MODULES
           rows = json.load(sys.stdin)
-          assert len(rows) == 18, f'expected 18 techniques, got {len(rows)}'
-          assert sum(1 for r in rows if r['implemented']) == 12
-          print('catalogue ok:', len(rows), 'techniques')
+          assert len(rows) == catalog.counts()['total'], 'list --json disagrees with the catalogue'
+          ids = {r['id'] for r in rows}
+          implemented = {r['id'] for r in rows if r['implemented']}
+          runnable = implemented - {'report.narrative', 'analysis.attack_chains'}
+          missing = runnable - set(MODULES)
+          assert not missing, f'implemented without a module: {sorted(missing)}'
+          stray = set(MODULES) - ids
+          assert not stray, f'modules outside the catalogue: {sorted(stray)}'
+          print('catalogue ok:', len(rows), 'techniques,', len(MODULES), 'modules')
           "
 
       - name: Provider matrix renders offline
         shell: bash
+        env:
+          RELIFT_AI_PROVIDER: offline
         run: relift providers
+
+      - name: Desktop API starts, serves the UI and refuses without a token
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "
+          import json, re, threading, urllib.error, urllib.request
+          from relift.api import build_server
+          server, token = build_server(0)
+          thread = threading.Thread(target=server.serve_forever, daemon=True)
+          thread.start()
+          host, port = server.server_address
+          base = f'http://{host}:{port}'
+          html = urllib.request.urlopen(base + '/', timeout=10).read().decode()
+          assert 'RELIFT_BOOT' in html, 'UI was served without the bootstrap token'
+          request = urllib.request.Request(base + '/api/meta')
+          try:
+              urllib.request.urlopen(request, timeout=10)
+          except urllib.error.HTTPError as exc:
+              assert exc.code == 401, exc.code
+          else:
+              raise SystemExit('API answered without a token')
+          request.add_header('X-Relift-Token', token)
+          meta = json.loads(urllib.request.urlopen(request, timeout=10).read())
+          assert meta['counts']['total'] > 0
+          server.shutdown()
+          print('desktop api ok:', meta['version'])
+          "
 
       - name: Scope gate refuses an out-of-scope target
         shell: bash
@@ -79,3 +125,14 @@ jobs:
           relift init-scope --engagement ci --host 127.0.0.1 --out "$RUNNER_TEMP/dry.json"
           relift scan --target http://127.0.0.1:9 --scope "$RUNNER_TEMP/dry.json" --no-ai | tee "$RUNNER_TEMP/plan.txt"
           grep -q "dry run" "$RUNNER_TEMP/plan.txt"
+
+      - name: Database target plans the database techniques
+        shell: bash
+        run: |
+          set -euo pipefail
+          relift init-scope --engagement ci-db --host 127.0.0.1 --out "$RUNNER_TEMP/db.json"
+          relift plan --target postgres://127.0.0.1:5432/app --scope "$RUNNER_TEMP/db.json" --no-ai \
+            | tee "$RUNNER_TEMP/dbplan.txt"
+          grep -q "db.fingerprint" "$RUNNER_TEMP/dbplan.txt"
+          grep -q "db.security_config" "$RUNNER_TEMP/dbplan.txt"
+          ! grep -q "web.headers" "$RUNNER_TEMP/dbplan.txt"
