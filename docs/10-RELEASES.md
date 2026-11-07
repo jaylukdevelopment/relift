@@ -79,10 +79,12 @@ The script tries `https://pixelcity.dev/lab/relift/downloads` first, then
 the checksum and installs one binary. Override the mirror with
 `RELIFT_DOWNLOAD_BASE` when testing a staging build.
 
-The mirror is updated by copying the freshly built Linux binaries and their
-`.sha256` files into the site's `public/downloads/` directory and redeploying the
-site container. Keep the mirror in step with the tag; the installer and the
-download page both point at it.
+The mirror is updated by copying the **published** Linux assets and their
+`.sha256` files out of the release (`gh release download`) into the site's
+`public/downloads/` directory, then redeploying the site container. Never rebuild
+them for the mirror: a second build has a different checksum and the download page
+would publish a hash that does not match the file it serves. Exact commands are in
+[`09-SITE.md`](09-SITE.md#refreshing-the-mirror-after-a-tag).
 
 ## Manual build
 

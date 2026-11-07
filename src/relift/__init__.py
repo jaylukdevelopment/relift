@@ -1,8 +1,8 @@
-"""Relift — Pixelcity red-team orchestration CLI (internal build).
+"""Relift — Pixelcity red-team orchestration CLI.
 
 Author : Jay
 Company: Pixelcity
-License: Proprietary, see LICENSE. Not open source yet.
+License: Source-available, proprietary; see LICENSE. Public, not open source.
 
 The engine (catalog, scope, modules, runner, report) has no dependency on the
 ``ai`` package. Removing ``relift.ai`` leaves a fully working scanner.

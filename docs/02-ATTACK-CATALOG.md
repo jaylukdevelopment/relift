@@ -4,8 +4,9 @@ Every technique the tool knows about lives here. The catalogue is the contract:
 if it is not in this table, Relift cannot run it, cannot plan it, and the AI
 analyst cannot suggest it.
 
-The table is generated from `src/relift/catalog.py` — run `relift list`
-for the live version.
+The table is maintained by hand next to `src/relift/catalog.py`; run
+`relift list` for the live version, and treat any disagreement as a documentation
+bug (see [`README.md`](README.md)).
 
 ## Risk tiers
 
@@ -83,11 +84,13 @@ One GET on the root path. Extracts `Server`, `X-Powered-By`, the page title, and
 HTTP status. Deliberately does *not* follow redirects: a `Location` can leave scope.
 
 ### `recon.port_scan` — safe
-TCP connect scan (`connect_ex`) over the operator's port list. Connect scans are
-complete handshakes, so they land in the target's logs — that is intended, this is
-not a stealth tool. Open/closed/filtered per port, with banner bytes where the
-service speaks first. Banners are flattened to printable ASCII before they reach a
-report, because a service banner is attacker-controlled text.
+TCP connect scan (`socket.create_connection`) over the operator's port list.
+Connect scans are complete handshakes, so they land in the target's logs — that is
+intended, this is not a stealth tool. A port is reported when the handshake
+completes; a closed port and a filtered one look the same from here (the connection
+fails), so they are not distinguished. Banner bytes are captured where the service
+speaks first, flattened to printable ASCII before they reach a report, because a
+service banner is attacker-controlled text.
 
 ### `recon.service_scan` — safe, external
 `nmap -sV -Pn --version-light` over the same port list. Version detection is what
@@ -136,14 +139,20 @@ Fetches `/robots.txt` and `/sitemap.xml`. Disallowed entries routinely name admi
 panels, staging hosts and backup paths. Reports paths only — it does not go fetch them.
 
 ### `web.template_scan` — safe, external
-`nuclei` restricted to informational/low/medium severities and *no* template
-categories that send payloads. Fixed template selection, `-no-interactsh`, rate
-limited. The single most valuable module and the most dangerous to leave unbounded —
-hence the hard-coded flags.
+`nuclei` with a hard-coded argument list: `-severity info,low,medium`,
+`-no-interactsh`, `-disable-update-check`, `-jsonl`, `-silent` and a rate limit taken
+from the scope file. The template set is the installed default set; the guard is the
+severity ceiling, not a template allowlist, so a noisy or payload-sending template
+that is rated low still runs. Do not treat the output as passive. It is the single
+most valuable module and the most dangerous to leave unbounded — hence the hard-coded
+flags and the `standard` profile requirement.
 
 ### `web.server_audit` — intrusive, external
-`nikto` with tuning restricted to configuration checks. Noisy, slow, and it will get
-you blocked. Requires `--profile lab`.
+`nikto` with `-Tuning 123b`: interesting files, misconfiguration, information
+disclosure and software identification, with the upload and injection tuning groups
+left out. It is read-only, and it is still noisy and slow — it will get you blocked.
+Requires `--profile lab` and the external-tool profile (`--depth 5`, or
+`include_external` in a plan).
 
 ### `web.sql_injection_check` — intrusive
 Detection only, one operator-named parameter, hard cap of **8 HTTP requests**.
@@ -158,8 +167,9 @@ Three probes, in order, stopping as soon as one proves the point:
    bodies to the baseline with a similarity ratio and a length delta. Both guards
    must agree, otherwise no finding.
 3. **time** — one delayed read-only query per engine family
-   (`SELECT SLEEP(2)`, `SELECT pg_sleep(2)`), measured once against the baseline
-   with a 1500 ms threshold. A delayed *error page* is not proof.
+   (`SELECT SLEEP(2)`, `SELECT pg_sleep(2)`), measured once against the baseline:
+   a response only counts when it is at least 1500 ms slower than the baseline
+   (`max(1500, baseline + 1500)` ms). A delayed *error page* is not proof.
 
 What it cannot do, in any configuration: there is no flag, file, environment
 variable or config key that supplies a payload string; no set-operator extraction,
@@ -207,11 +217,14 @@ life.
 Evidence block, which the correlation engine reads by name: `engine`, `version`,
 `port`, `auth_required`, `auth_method`, `cleartext_auth`, `tls_capable`, `eol`.
 
-Severities: no authentication demanded → `critical` (except MongoDB `hello`, which
-is `medium` because `hello` is unauthenticated by design); replayable exchange over
-a plaintext socket → `high`; replayable exchange with TLS available → `medium`;
-past end of life → `high`; no TLS → `medium` for postgres/mysql/mssql, `low`
-otherwise.
+Severities: no authentication demanded → `critical` for postgres, mysql, mssql and
+redis, `high` for Elasticsearch/CouchDB (HTTP answers without a credential), and
+`medium` for MongoDB `hello` (unauthenticated by design, so reachability only);
+replayable exchange → `medium`, raised to `high` by the separate no-TLS finding when
+the socket is plaintext; past end of life → `high`; no TLS → `medium` for
+postgres/mysql/mssql, `low` for redis/mongo. Elasticsearch and CouchDB report
+transport posture through the `web.*`/`tls.*` modules instead, so
+`db.security_config` emits no no-TLS finding for them.
 
 ### `db.credential_verify` — intrusive
 Verifies credentials the operator **already holds**. One login attempt per
@@ -221,8 +234,10 @@ loop. Then it reads that account's privilege level (`superuser`, `admin`,
 
 Supported flows: PostgreSQL trust/cleartext/MD5/SCRAM-SHA-256, MySQL
 `mysql_native_password`, Redis `AUTH` (ACL and pre-ACL shapes), MongoDB
-SCRAM-SHA-256. MSSQL and MySQL `caching_sha2_password` over plaintext are reported
-as unsupported rather than faked.
+SCRAM-SHA-256. MySQL `caching_sha2_password`/`sha256_password` over a plaintext
+socket is reported as "needs TLS or an RSA exchange; not attempted" rather than
+faked. MSSQL is not attempted at all: the whole technique is recorded as skipped
+with a reason, so no credential is offered to a TDS listener.
 
 The password is never written to a finding, an evidence dictionary, an exception
 message or the audit log; server errors are scrubbed because some engines echo part

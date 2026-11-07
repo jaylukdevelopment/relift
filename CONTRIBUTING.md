@@ -81,5 +81,6 @@ Linux and Windows, Python 3.9 and 3.13. Screenshots help for desktop changes.
 Bugs go to [Issues](https://github.com/jaylukdevelopment/relift/issues). Security
 issues go through [`SECURITY.md`](SECURITY.md), never a public issue.
 
-By contributing you agree that your contribution is licensed under the
-repository's [LICENSE](LICENSE).
+By contributing you agree that your contribution is distributed under the
+repository's [LICENSE](LICENSE) and that the maintainer may relicense it with the
+rest of the project when the source-available terms change.

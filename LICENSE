@@ -4,10 +4,9 @@ Author and developer: Jay
 
 STATUS
 ------
-This project is NOT open source. It is an internal Pixelcity build being tested
-against Pixelcity-owned infrastructure. No license to use, copy, modify, merge,
-publish, distribute, sublicense or sell copies of the software is granted at this
-time.
+This project is source-available, NOT open source. The source is public so the
+scope gate, the catalogue and the protocol code can be read and reviewed. It
+remains a Pixelcity project; the permissions below are the only ones granted.
 
 INTENT
 ------
@@ -19,15 +18,24 @@ once two conditions are met:
   2. The attack catalogue has been classified and the destructive classes are
      documented rather than shipped.
 
-Until then, treat this as "all rights reserved". If you were handed a copy, you
-were handed a copy; that is not a grant.
+Until then, treat this as "all rights reserved" except for the limited permission
+below.
+
+LIMITED PERMISSION
+------------------
+You may read, compile and run this software, and modify it for your own use, for
+lawful security testing of systems you own or are explicitly contracted to test.
+You may not redistribute it, publish modified copies, sublicense it, sell it, or
+offer it (modified or not) as a hosted or managed service. You may not remove the
+authorisation gate or the notices in this file. Contributions are accepted under
+the terms in CONTRIBUTING.md.
 
 AUTHORIZED USE ONLY
 -------------------
-This software performs active network operations. Running it against systems you
-do not own or have not been explicitly commissioned to test is illegal in most
-jurisdictions and is expressly contrary to the intent of the author and of
-Pixelcity. The authorisation gate in this software exists to make that boundary
+The permission above is limited to lawful, authorised testing. Running this
+software against systems you do not own or have not been explicitly commissioned
+to test is illegal in most jurisdictions and is outside the permission granted
+here. The authorisation gate in this software exists to make that boundary
 mechanical rather than a matter of good intentions.
 
 NO WARRANTY

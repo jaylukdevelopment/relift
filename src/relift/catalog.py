@@ -188,8 +188,8 @@ _SPECS: tuple[AttackSpec, ...] = (
         name="Server misconfiguration audit",
         category="web",
         risk=Risk.INTRUSIVE,
-        summary="nikto tuning restricted to configuration checks. Noisy and slow; "
-                "requires --profile lab.",
+        summary="nikto tuned to files, misconfiguration, disclosure and version "
+                "checks. Noisy and slow; needs --profile lab and external tools.",
         requires=("nikto",),
         produces=("misfits",),
         ai_hint="Treat every nikto line as a lead to verify, never as a "

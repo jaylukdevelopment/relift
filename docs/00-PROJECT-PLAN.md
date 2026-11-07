@@ -5,7 +5,7 @@
 | Project | Relift |
 | Company | Pixelcity |
 | Developer / owner | Jay |
-| Version | 0.2.0 (internal) |
+| Version | 0.2.0 (public, source-available) |
 | Status | Engine + database auditing + host audit + attack threads + desktop app |
 | License | Proprietary for now, open source later (see `LICENSE`) |
 

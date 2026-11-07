@@ -8,8 +8,9 @@ Design constraints, in order of importance:
 2. It binds ``127.0.0.1`` only, and every ``/api`` call needs the token that
    was generated at launch. Browser content on another origin cannot read the
    token because no CORS headers are ever sent.
-3. It serves exactly four static files from a fixed list. No path joining, no
-   directory listing, no template rendering of user input.
+3. It serves exactly three static files from a fixed list. No path joining, no
+   directory listing, no template rendering of user input. The splash is read by
+   the launcher, never served.
 """
 
 from __future__ import annotations
