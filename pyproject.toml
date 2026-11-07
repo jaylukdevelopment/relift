@@ -30,9 +30,12 @@ relift = "relift.cli:entry"
 relift-desktop = "relift.desktop:main"
 
 [project.urls]
-Homepage = "https://github.com/jaylukdevelopment/relift"
+Homepage = "https://pixelcity.dev/lab/relift"
+Documentation = "https://pixelcity.dev/lab/relift/docs"
 Source = "https://github.com/jaylukdevelopment/relift"
 Issues = "https://github.com/jaylukdevelopment/relift/issues"
+Changelog = "https://github.com/jaylukdevelopment/relift/blob/main/CHANGELOG.md"
+Security = "https://github.com/jaylukdevelopment/relift/security/policy"
 
 [tool.setuptools.packages.find]
 where = ["src"]

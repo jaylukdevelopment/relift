@@ -3,6 +3,10 @@
 **Authorized infrastructure attack-surface testing — as a CLI and a desktop app.**
 A [Pixelcity](https://pixelcity.dev) tool. Built and maintained by **Jay**.
 
+[![ci](https://github.com/jaylukdevelopment/relift/actions/workflows/ci.yml/badge.svg)](https://github.com/jaylukdevelopment/relift/actions/workflows/ci.yml)
+[![release](https://github.com/jaylukdevelopment/relift/actions/workflows/release.yml/badge.svg)](https://github.com/jaylukdevelopment/relift/releases)
+[![license: source-available](https://img.shields.io/badge/license-source--available-blue.svg)](LICENSE)
+
 [relift.pixelcity.dev](https://relift.pixelcity.dev) · [download](https://relift.pixelcity.dev/download) · [documentation](https://relift.pixelcity.dev/docs)
 
 ```
@@ -74,26 +78,43 @@ at anything, and never at a host you do not control.
 
 ## Quickstart
 
+The one-line Linux install (checksum-verified, no Python needed):
+
+```bash
+curl -fsSL https://pixelcity.dev/lab/relift/install.sh | sh
+relift attack --target https://lab.example.com --depth 2
+```
+
+From source, with nothing outside the standard library at runtime:
+
 ```bash
 cd relift
 
-# 1. Install (editable, no dependencies outside the stdlib)
+# 1. Install (editable)
 python -m pip install -e .
 
 # 2. See every attack the tool knows about
 relift list
 
-# 3. Create a scope file for your own lab
-relift init-scope --engagement homelab --host 127.0.0.1 --host 192.168.1.0/24
+# 3. Attack a host you own: authors a 24-hour scope for it, then runs
+relift attack --target https://lab.example.com --depth 2
 
-# 4. Plan (dry-run is the default, no packets sent except DNS)
-relift scan --target http://127.0.0.1:8080 --scope scope.json
-
-# 5. Actually execute
-relift scan --target http://127.0.0.1:8080 --scope scope.json --execute
-
-# 6. Read the threads
+# 4. Read the threads
 relift chains
+```
+
+`--depth` is how far the run goes: `1` passive, `2` safe (default), `3` standard
+(adds nmap/nuclei when installed), `4` intrusive, `5` full. `attack` is the same
+gate as `scan` — it writes a real scope file under `~/.relift/scopes/`, prints it,
+and logs the authorisation; it just saves you writing that file by hand.
+
+If you want a wider engagement (several hosts, a CIDR, a shorter expiry), use the
+explicit two-step form:
+
+```bash
+relift init-scope --engagement homelab --host 127.0.0.1 --host 192.168.1.0/24
+relift scan --target http://127.0.0.1:8080 --scope scope.json          # dry run
+relift scan --target http://127.0.0.1:8080 --scope scope.json --execute
 ```
 
 Without installing, use `python -m relift` from inside `src/`:
@@ -215,10 +236,10 @@ Every `v*` tag publishes prebuilt assets to
 
 | Asset | Platform | Needs Python |
 |---|---|---|
-| `relift-windows-x64.exe` | Windows 10/11 x64, console | no |
-| `relift-linux-x64` | Linux x86_64, glibc 2.35+ | no |
-| `relift-desktop-windows-x64.exe` | Windows 10/11 x64, windowed | no |
-| `relift-desktop-linux-x64` | Linux x86_64, windowed | no |
+| `relift-windows-x64.exe` | Windows 10/11 x64, CLI | no |
+| `relift-linux-x64` | Linux x86_64, glibc 2.35+, CLI | no |
+| `relift-desktop-windows-x64.exe` | Windows 10/11 x64, desktop window | no |
+| `relift-desktop-linux-x64` | Linux x86_64, desktop window | no |
 | `relift.pyz` | any OS | 3.9+ |
 | `relift-0.2.0-py3-none-any.whl` | any OS | 3.9+ |
 
@@ -228,20 +249,26 @@ Each executable ships with a `.sha256` sidecar; verify before running:
 sha256sum -c relift-linux-x64.sha256
 ```
 
-The desktop binaries are built with `--windowed` and the UI assets bundled, so they
-do not need a Python install. On Linux they still use the system WebKitGTK
-(`gir1.2-webkit2-4.1` on Debian/Ubuntu), and on Windows 10 they need the WebView2
-Evergreen Runtime; the CLI binaries have neither requirement.
+The desktop binaries bundle PyGObject and the UI assets, so they do not need a
+Python install. They deliberately leave GLib, GTK and libstdc++ to the host: a
+build-image copy shadows newer system libraries and stops WebKitGTK from loading.
+On Linux the window needs WebKitGTK 4.1 (`gir1.2-webkit2-4.1` on Debian/Ubuntu);
+on Windows 10/11 it needs the WebView2 Evergreen Runtime, which ships with the
+system. The CLI binaries have neither requirement.
 
-The Windows executables are **not code-signed**, so SmartScreen will warn on first
-launch (More info → Run anyway). The Linux binaries are built on Ubuntu 22.04; on an
-older glibc, use the wheel or the `.pyz` instead. Nothing in any build phones home.
+Linux builds are published to GitHub and mirrored at
+[pixelcity.dev/lab/relift/downloads](https://pixelcity.dev/lab/relift/downloads),
+so `install.sh` does not need a GitHub account. The Windows executables are **not
+code-signed**, so SmartScreen will warn on first launch (More info → Run anyway).
+The Linux binaries are built on Ubuntu 22.04; on an older glibc, use the wheel or
+the `.pyz` instead. Nothing in any build phones home.
 
 ## Commands
 
 ```
 relift list        [--category C] [--implemented-only] [--json]   Catalogue dump
 relift providers   [--json]                                      AI provider matrix
+relift attack      --target T [--depth 1-5]                      One command: scope + run
 relift init-scope  --engagement NAME --host H [--host H ...]      Write a scope file
 relift plan        --target T [--profile P]                      Ordered run plan
 relift scan        --target T --scope S [--execute]              Run it
@@ -292,13 +319,20 @@ catalogue, it never emits shell commands, and it never sees credentials. Details
 | [`docs/06-CLI-REFERENCE.md`](docs/06-CLI-REFERENCE.md) | Full flag reference, target forms, output shapes |
 | [`docs/07-DATABASE-AUDIT.md`](docs/07-DATABASE-AUDIT.md) | Database protocols, credential file, privilege grading, lab recipes |
 | [`docs/08-DESKTOP.md`](docs/08-DESKTOP.md) | Desktop architecture, API, security model, build commands |
+| [`docs/09-SITE.md`](docs/09-SITE.md) | The public page and how it relates to the tool |
+| [`docs/10-RELEASES.md`](docs/10-RELEASES.md) | Versioning, tag flow, assets, installer, checksums |
+
+Also: [`docs/README.md`](docs/README.md) (index and reading order),
+[`SECURITY.md`](SECURITY.md) (private reporting and safe harbour),
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status
 
-`v0.2.0` — internal build, **not** open source yet. Licensed
-[source-available / all rights reserved](LICENSE) while it is battle-tested on
-Pixelcity infrastructure. The intent is to relicense once the authorisation model
-and the catalogue have been hardened.
+`v0.2.0` — public and **source-available**, not open source. The repository is
+readable and issues are open, while the [licence](LICENSE) stays all rights
+reserved until the authorisation model and the catalogue have been hardened. The
+intent is to relicense once that bar is met; until then, running it against your
+own infrastructure is welcome, redistributing it is not.
 
 ## Credits
 
