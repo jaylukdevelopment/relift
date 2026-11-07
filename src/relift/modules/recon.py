@@ -13,6 +13,18 @@ _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 _NMAP_LINE = re.compile(r"^(\d+)/(?:tcp|udp)\s+(\S+)\s+(\S+)?\s*(.*)$")
 
 
+def printable_banner(text: str, limit: int = 120) -> str:
+    """Make a service banner safe to print and to store in a report.
+
+    Banners are arbitrary bytes chosen by the target: control sequences, NULs
+    and terminal escapes all arrive this way. Collapse them to visible ASCII so
+    a report cannot be used to write escape codes to the reader's terminal.
+    """
+    cleaned = "".join(ch if 32 <= ord(ch) < 127 else "." for ch in str(text))
+    collapsed = re.sub(r"\.{3,}", "...", cleaned).strip(". ")
+    return collapsed[:limit]
+
+
 def classify_address(text: str) -> str:
     """How a resolved address sits relative to the public internet."""
     try:
@@ -144,7 +156,7 @@ class PortScanModule(Module):
             if reachable:
                 open_ports.append(port)
                 if banner:
-                    banners[str(port)] = banner[:120]
+                    banners[str(port)] = printable_banner(banner)
 
         if not open_ports:
             return [

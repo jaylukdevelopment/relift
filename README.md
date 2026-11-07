@@ -1,27 +1,30 @@
 # Relift
 
-**Authorized infrastructure attack-surface testing — as a CLI.**
+**Authorized infrastructure attack-surface testing — as a CLI and a desktop app.**
 A [Pixelcity](https://pixelcity.dev) tool. Built and maintained by **Jay**.
 
+[relift.pixelcity.dev](https://relift.pixelcity.dev) · [download](https://relift.pixelcity.dev/download) · [documentation](https://relift.pixelcity.dev/docs)
+
 ```
-relift  ::  Pixelcity Red Team Orchestrator  ::  v0.1.0
+relift  ::  Pixelcity Red Team Orchestrator  ::  v0.2.0
 ```
 
 ---
 
 ## What this is
 
-Relift is a single-binary-friendly Python CLI that runs a **catalogue of real,
+Relift is a single-binary-friendly Python tool that runs a **catalogue of real,
 well-known assessment techniques** against hosts you own, orchestrates them in a
-sane order, correlates what they return, and lists every technique it knows about
-in its own output — so the tool is self-documenting.
+sane order, correlates what they return into attack threads, and lists every
+technique it knows about in its own output — so the tool is self-documenting.
 
-It has two independent halves:
+It has three independent parts:
 
-| Half | Purpose | Needs AI? |
+| Part | Purpose | Needs AI? |
 |---|---|---|
-| **Engine** | Scope enforcement, catalogue, module execution, findings, reporting | No |
+| **Engine** | Scope enforcement, catalogue, module execution, findings, attack threads, reporting | No |
 | **Analyst** | Plan selection, triage, narrative reports, "what next?" advice | Optional |
+| **Desktop** | The same engine in a local window over a loopback JSON API | No |
 
 The AI layer is a *plugin*, not a dependency. Every provider — local or cloud — sits
 behind one interface, and `--no-ai` (or the `offline` provider) runs the deterministic
@@ -43,19 +46,29 @@ at anything, and never at a host you do not control.
 
 ## Highlights
 
-- **18-entry attack catalogue** with risk tiers, MITRE mapping and implementation status.
+- **24-entry attack catalogue** with risk tiers, MITRE mapping and implementation status.
 - **`relift list`** prints the whole catalogue — every technique, what it touches,
   and whether it is implemented or design-only.
 - **Scope gate**: nothing runs unless the target matches an explicit, expiring,
   signed-off allowlist (`scope.json`). Deny rules always win.
 - **Dry-run by default**: `scan` prints the plan; `--execute` is a separate, deliberate flag.
 - **Real network operations**, not simulations: DNS resolution, TCP connect scan,
-  TLS handshake probing, certificate parsing, HTTP header/method analysis.
-- **External tool wrappers** for `nmap`, `nuclei`, `whatweb`, `nikto` when installed —
-  fixed argument templates, no shell interpolation.
+  TLS handshake probing, certificate parsing, HTTP header/method analysis, SSH
+  KEXINIT parsing.
+- **Real database protocols**, spoken directly: PostgreSQL startup and SCRAM, MySQL
+  handshake, TDS pre-login, Redis RESP, MongoDB OP_MSG, Elasticsearch/CouchDB HTTP.
+  No drivers, and no login unless you supply a credential.
+- **Attack threads**: findings are joined into multi-stage paths, each with the one
+  control that breaks it.
+- **Local host audit**: SUID/SGID, capabilities, sudo rules, container sockets,
+  listening ports, kernel advisory pass — read-only.
+- **External tool wrappers** for `nmap`, `nuclei`, `nikto` when installed — fixed
+  argument templates, no shell interpolation.
 - **8 AI providers + offline**: Ollama, LM Studio, llama.cpp and any OpenAI-compatible
   gateway (local, no data leaves the box), OpenAI, Anthropic, OpenRouter and Groq
   (cloud), plus a deterministic rule engine.
+- **Desktop application** for Windows and Linux: native window when available,
+  browser otherwise, loopback-only and token-gated.
 - **Audit trail**: every authorisation decision, module run and AI call lands in an
   append-only JSONL log plus a per-run JSON artefact.
 
@@ -78,6 +91,9 @@ relift scan --target http://127.0.0.1:8080 --scope scope.json
 
 # 5. Actually execute
 relift scan --target http://127.0.0.1:8080 --scope scope.json --execute
+
+# 6. Read the threads
+relift chains
 ```
 
 Without installing, use `python -m relift` from inside `src/`:
@@ -86,6 +102,112 @@ Without installing, use `python -m relift` from inside `src/`:
 cd src && python -m relift list
 ```
 
+## Databases
+
+Database targets are first-class. The scheme picks the protocol and the default
+port, and the plan is filtered to techniques that make sense for it.
+
+```
+postgres://127.0.0.1:5432/appdb        postgresql://
+mysql://10.10.10.20:3306/appdb         mariadb://
+redis://10.10.10.20:6379               rediss://
+mongodb://10.10.10.20:27017
+mssql://10.10.10.20:1433               sqlserver://  tds://
+elasticsearch://10.10.10.20:9200       opensearch://  es://
+couchdb://10.10.10.20:5984
+```
+
+Two tiers exist for databases, and they answer different questions:
+
+| Tier | Technique | Question |
+|---|---|---|
+| safe | `db.fingerprint`, `db.security_config` | What is this listener, does it demand authentication, which method, is TLS possible, is the build still supported? |
+| intrusive (`--profile lab`) | `db.credential_verify` | Does this credential I already hold still work, and how powerful is it? |
+
+The safe tier speaks the protocol and reads only what the protocol hands out before
+authentication. The intrusive tier makes **exactly one login attempt per supplied
+credential** — no wordlist, no spray, no retry loop — then reads that account's
+privilege level. It cannot lock an account out on its own.
+
+```bash
+# what does this listener look like?
+relift scan --target postgres://127.0.0.1:5432/appdb \
+  --scope scope.json --execute
+
+# does this credential from the leaked .env still work?
+cat > creds.json <<'JSON'
+{"credentials":[
+  {"engine":"postgres","host":"127.0.0.1","port":5432,
+   "username":"app","password":"from-the-backup","database":"appdb"}
+]}
+JSON
+chmod 600 creds.json
+
+relift scan --target postgres://127.0.0.1:5432/appdb \
+  --scope scope.json --profile lab --execute --db-creds creds.json
+```
+
+A listener that answers without authentication is critical, not a hardening note. So
+is a credential that still works with superuser rights. Both produce an attack
+thread, not just a finding.
+
+Full reference — protocols, privilege grading, the end-of-life table, and what the
+tool refuses to do: [`docs/07-DATABASE-AUDIT.md`](docs/07-DATABASE-AUDIT.md).
+
+## Attack threads
+
+A finding says what is true. A thread says what it is worth.
+
+After the modules run, `analysis.attack_chains` joins the findings into multi-stage
+paths — reconnaissance, initial access, discovery, credential access, pivot,
+collection, escalation, impact — and names the stage that carries the chain plus the
+single control that breaks it. It only uses findings from the run: a stage with no
+evidence behind it is never invented.
+
+```
+ CRIT Unauthenticated redis reachable: full datastore read path
+  path   reconnaissance -> initial access -> collection
+  break  Enable authentication and bind the listener to the loopback or an
+         internal interface. Fix order: bind address first, then auth.
+```
+
+Ten rules ship: unauthenticated datastore, application-to-datastore (injectable
+parameter plus a reachable database), held credential, container socket, cleartext
+datastore auth, end-of-life datastore, plaintext session, writable admin surface,
+certificate trust, and local privilege escalation.
+
+```bash
+relift chains                              # latest run, text
+relift chains --run <id> --format json     # machine-readable
+```
+
+## Desktop application
+
+`relift desktop` starts one loopback server and points a window at it. It is the
+same process, the same scope file and the same engine functions as the CLI — there
+is no second path around the gate.
+
+```bash
+# native window when pywebview is installed (WebView2 / WebKitGTK)
+python -m pip install -e ".[desktop]"
+relift desktop
+
+# or serve only and open the URL yourself
+relift desktop --no-window --port 8765
+
+# the same launcher as a console script
+relift-desktop
+```
+
+The server binds `127.0.0.1` only, generates a one-time token at launch, and
+requires it in an `X-Relift-Token` header on every `/api` call. No CORS headers are
+ever sent, request logging is disabled so a token cannot reach a terminal, and only
+three static files are served from a fixed whitelist. If the native window cannot
+start, the same URL opens in the default browser.
+
+Architecture, API table and PyInstaller build commands:
+[`docs/08-DESKTOP.md`](docs/08-DESKTOP.md).
+
 ## Releases
 
 Every `v*` tag publishes prebuilt assets to
@@ -93,10 +215,12 @@ Every `v*` tag publishes prebuilt assets to
 
 | Asset | Platform | Needs Python |
 |---|---|---|
-| `relift-windows-x64.exe` | Windows 10/11 x64 | no |
+| `relift-windows-x64.exe` | Windows 10/11 x64, console | no |
 | `relift-linux-x64` | Linux x86_64, glibc 2.35+ | no |
+| `relift-desktop-windows-x64.exe` | Windows 10/11 x64, windowed | no |
+| `relift-desktop-linux-x64` | Linux x86_64, windowed | no |
 | `relift.pyz` | any OS | 3.9+ |
-| `relift-0.1.0-py3-none-any.whl` | any OS | 3.9+ |
+| `relift-0.2.0-py3-none-any.whl` | any OS | 3.9+ |
 
 Each executable ships with a `.sha256` sidecar; verify before running:
 
@@ -104,8 +228,13 @@ Each executable ships with a `.sha256` sidecar; verify before running:
 sha256sum -c relift-linux-x64.sha256
 ```
 
-The Windows executable is **not code-signed**, so SmartScreen will warn on first
-launch (More info → Run anyway). The Linux binary is built on Ubuntu 24.04; on an
+The desktop binaries are built with `--windowed` and the UI assets bundled, so they
+do not need a Python install. On Linux they still use the system WebKitGTK
+(`gir1.2-webkit2-4.1` on Debian/Ubuntu), and on Windows 10 they need the WebView2
+Evergreen Runtime; the CLI binaries have neither requirement.
+
+The Windows executables are **not code-signed**, so SmartScreen will warn on first
+launch (More info → Run anyway). The Linux binaries are built on Ubuntu 22.04; on an
 older glibc, use the wheel or the `.pyz` instead. Nothing in any build phones home.
 
 ## Commands
@@ -116,10 +245,17 @@ relift providers   [--json]                                      AI provider mat
 relift init-scope  --engagement NAME --host H [--host H ...]      Write a scope file
 relift plan        --target T [--profile P]                      Ordered run plan
 relift scan        --target T --scope S [--execute]              Run it
+relift chains      [--run ID] [--format text|json]                Attack threads
 relift report      --run RUN_ID [--format md|json|text]          Render a run
+relift desktop     [--port N] [--no-window]                      Desktop application
 ```
 
-Profiles: `passive`, `safe` (default), `standard`, `lab`.
+Profiles: `passive`, `safe` (default), `standard`, `lab`. Database credentials
+(`--db-creds`) and injection probes (`--sqli-url` / `--sqli-param`) are intrusive
+and only run under `--profile lab` with an intrusive scope.
+
+Targets: any `http(s)://` origin, a database scheme from the table above,
+`ssh://host:22`, or `local://` for the host audit.
 
 ## AI providers
 
@@ -153,11 +289,13 @@ catalogue, it never emits shell commands, and it never sees credentials. Details
 | [`docs/03-RULES-OF-ENGAGEMENT.md`](docs/03-RULES-OF-ENGAGEMENT.md) | Scope schema, authorisation gate, excluded classes |
 | [`docs/04-AI-PROVIDERS.md`](docs/04-AI-PROVIDERS.md) | Provider matrix, env vars, prompt contract, guardrails |
 | [`docs/05-ROADMAP.md`](docs/05-ROADMAP.md) | v0.1 → v1.0 phases and release gates |
-| [`docs/06-CLI-REFERENCE.md`](docs/06-CLI-REFERENCE.md) | Full flag reference and output shapes |
+| [`docs/06-CLI-REFERENCE.md`](docs/06-CLI-REFERENCE.md) | Full flag reference, target forms, output shapes |
+| [`docs/07-DATABASE-AUDIT.md`](docs/07-DATABASE-AUDIT.md) | Database protocols, credential file, privilege grading, lab recipes |
+| [`docs/08-DESKTOP.md`](docs/08-DESKTOP.md) | Desktop architecture, API, security model, build commands |
 
 ## Status
 
-`v0.1.0` — internal build, **not** open source yet. Licensed
+`v0.2.0` — internal build, **not** open source yet. Licensed
 [source-available / all rights reserved](LICENSE) while it is battle-tested on
 Pixelcity infrastructure. The intent is to relicense once the authorisation model
 and the catalogue have been hardened.

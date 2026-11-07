@@ -10,13 +10,14 @@ from __future__ import annotations
 import ipaddress
 import json
 import socket
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from .models import Risk, RISK_RANK
+from .models import RISK_RANK, Risk
 
 DEFAULT_PORTS = (22, 80, 443, 8000, 8080, 8443)
 

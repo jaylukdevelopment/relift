@@ -6,11 +6,13 @@ skipped instead of pretending it ran.
 
 from __future__ import annotations
 
-from . import recon, tls, web
+from . import db, dbauth, recon, sqlinject, ssh, system, tls, web
 from .base import (
+    MissingInput,
     MissingTool,
     Module,
     ScanContext,
+    TCPConn,
     finding,
     run_tool,
     tool_path,
@@ -28,15 +30,23 @@ _MODULE_CLASSES = (
     web.ContentDisclosureModule,
     web.TemplateScanModule,
     web.ServerAuditModule,
+    db.DatabaseFingerprintModule,
+    db.DatabaseSecurityModule,
+    dbauth.CredentialVerifyModule,
+    sqlinject.SqlInjectionModule,
+    system.HostAuditModule,
+    ssh.SshAlgorithmModule,
 )
 
 MODULES: dict[str, Module] = {cls.attack_id: cls() for cls in _MODULE_CLASSES}
 
 __all__ = [
     "MODULES",
+    "MissingInput",
     "MissingTool",
     "Module",
     "ScanContext",
+    "TCPConn",
     "finding",
     "run_tool",
     "tool_path",

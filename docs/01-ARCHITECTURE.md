@@ -34,6 +34,16 @@
 view of the run after the fact, or a plan request before it. Deleting `ai/` from the
 tree leaves a fully working scanner.
 
+Two things sit beside the CLI without forking it:
+
+- `chains.py` reads a finished `RunRecord` and returns attack threads. It is pure:
+  findings in, threads out, no network, so it runs on stored runs (`relift chains`)
+  as well as fresh ones.
+- `desktop.py` + `api.py` are a second front-end. The API calls the *same*
+  `load_scope()` and `runner.scan()` the CLI calls; there is no alternate scan path
+  that could skip the gate. The API binds `127.0.0.1` only, requires a per-launch
+  bearer token, and rejects any request carrying a foreign `Origin`.
+
 ## 2. File map
 
 | Path | Responsibility |
@@ -42,12 +52,22 @@ tree leaves a fully working scanner.
 | `catalog.py` | The catalogue: every technique, its tier, status, requirements |
 | `scope.py` | Scope file parsing, CIDR/wildcard matching, expiry, risk ceiling, denial |
 | `audit.py` | Append-only JSONL audit log + per-run artefact writer |
-| `modules/base.py` | `Module` contract, `ScanContext`, rate limiter, shared HTTP helper |
-| `modules/recon.py` | DNS, TCP connect scan, HTTP fingerprint |
-| `modules/web.py` | Security headers, HTTP methods, robots/sitemap disclosure |
+| `modules/base.py` | `Module` contract, `ScanContext`, `TCPConn` (+ raw TLS), rate limiter, shared HTTP helper |
+| `modules/recon.py` | DNS, TCP connect scan, HTTP fingerprint, service scan |
+| `modules/web.py` | Security headers, HTTP methods, robots/sitemap disclosure, template scan |
 | `modules/tls.py` | Certificate inspection, protocol version support |
-| `runner.py` | Profile → plan, plan → executions, findings aggregation |
-| `report.py` | Text table, Markdown, JSON, optional AI narrative |
+| `modules/db.py` | Pre-auth database audit; opens the wire protocol and reads what it answers |
+| `modules/dbauth.py` | Credential verification and post-auth privilege grading, one attempt per credential |
+| `modules/dbproto.py` | Wire codecs: PG v3, MySQL, Redis RESP, MongoDB BSON/OP_MSG, TDS, Elasticsearch |
+| `modules/system.py` | Host audit of the machine the tool runs on (sshd config, users, SUID, world-writable) |
+| `modules/ssh.py` | SSH transport-banner and KEXINIT enumeration, deprecated algorithm detection |
+| `modules/sqlinject.py` | Single-request error-based and boolean SQLi check, fixed payload set |
+| `chains.py` | Findings → multi-stage attack threads, with the stage that breaks the path |
+| `runner.py` | Profile → plan, plan → executions, findings aggregation, chain building |
+| `report.py` | Text table, Markdown, JSON, threads section, optional AI narrative |
+| `api.py` | Loopback JSON API for the desktop UI (token, Origin check, job registry) |
+| `desktop.py` | Native window (pywebview) or browser fallback; frozen-entry friendly |
+| `desktop/` | `app.html`, `app.css`, `app.js` — offline, no CDN, no framework |
 | `ai/base.py` | `AIProvider` interface + `Analyst` (prompt building, output validation) |
 | `ai/local.py` | Ollama, LM Studio / llama.cpp / vLLM (OpenAI-compatible) |
 | `ai/cloud.py` | OpenAI, Anthropic, OpenRouter, Groq |
@@ -74,7 +94,14 @@ ctx.insecure    # skip TLS verification (lab self-signed certs)
 ctx.dry_run     # True → modules must not send packets
 ctx.throttle()  # call before each network operation; enforces RPS budget
 ctx.audit       # append an audit event
+ctx.credentials # list of optional credentials for verifier modules
 ```
+
+Protocol modules do not use `urllib`; they open a `TCPConn` instead, which gives
+them a socket with a deadline, `recv_exact()`, and an optional TLS upgrade. Any
+module that needs more than a request/response (PostgreSQL startup, Redis RESP,
+TDS pre-login) builds the bytes in `dbproto.py` so the codecs stay testable
+without a server.
 
 Rules a module must follow:
 
@@ -106,6 +133,7 @@ scan --target T --scope S [--execute]
    │     else: ctx.throttle(); findings = module.run(ctx)
    │           ──► Execution(status="ok"|"error", findings=n)
    ├─ aggregate findings (dedupe by (attack_id, target, title))
+   ├─ build attack threads (chains.py, pure, no network)
    ├─ write .relift-runs/<run_id>/run.json
    ├─ append to ~/.relift/audit.jsonl
    └─ render

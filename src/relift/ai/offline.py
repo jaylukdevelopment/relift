@@ -110,7 +110,10 @@ def rule_narrative(payload: dict[str, Any]) -> str:
     else:
         for index, item in enumerate(actionable, start=1):
             advice = CATEGORY_ADVICE.get(str(item.get("attack_id")), "")
-            line = f"{index}. **{item.get('title')}** ({item.get('severity')}) — {item.get('attack_id')}"
+            line = (
+                f"{index}. **{item.get('title')}** ({item.get('severity')})"
+                f" — {item.get('attack_id')}"
+            )
             if advice:
                 line += f"; {advice}"
             lines.append(line)

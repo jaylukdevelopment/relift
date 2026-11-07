@@ -5,8 +5,8 @@
 | Project | Relift |
 | Company | Pixelcity |
 | Developer / owner | Jay |
-| Version | 0.1.0 (internal) |
-| Status | Scaffold + working engine, catalogue-driven |
+| Version | 0.2.0 (internal) |
+| Status | Engine + database auditing + host audit + attack threads + desktop app |
 | License | Proprietary for now, open source later (see `LICENSE`) |
 
 ---
@@ -79,13 +79,19 @@ which of them have actually been run against a given target.
 - **Exit criteria:** `relift list` renders; `scan --execute` runs at least six
   modules against a local service; `--no-ai` produces the same findings as `--ai none`.
 
-### M2 — Depth (next)
-- [ ] Findings correlation: merge header + TLS + method findings into per-host posture
+### M2 — Depth (shipped in 0.2.0)
+- [x] Database auditing: PostgreSQL, MySQL/MariaDB, Redis, MongoDB, MSSQL, Elasticsearch
+- [x] Credential verification against a live server, one attempt per credential, consent-gated
+- [x] Host audit from the local machine (users, sshd config, world-writable paths, SUID)
+- [x] SSH transport pre-auth enumeration (banner, KEXINIT, deprecated algorithms)
+- [x] Single-request SQL injection check (error-based + boolean), fixed payload set
+- [x] Findings correlation: `chains.py` merges findings into multi-stage attack threads
+- [x] Config file (`relift.config.json`) with profiles and per-engagement defaults
+- [x] Desktop application (Windows/Linux): loopback HTTP API + token-authenticated UI
 - [ ] Severity scoring with CVSS-style vector strings from the module, not the AI
 - [ ] HTML report, single self-contained file
 - [ ] `relift diff runA runB` — what changed since last sweep
-- [ ] Config file (`relift.config.json`) with profiles and per-engagement defaults
-- **Exit criteria:** two consecutive runs produce a readable diff; HTML opens offline.
+- **Exit criteria (remaining):** two consecutive runs produce a readable diff; HTML opens offline.
 
 ### M3 — Breadth
 - [ ] Subdomain enumeration from a passive source (no brute-force) as a module

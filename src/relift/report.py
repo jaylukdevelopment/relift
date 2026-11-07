@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 import sys
-from typing import Any, Sequence
+import textwrap
+from collections.abc import Sequence
+from typing import Any
 
 from . import BANNER
 
@@ -122,6 +124,29 @@ def severity_tag(value: Any) -> str:
     }
     code, label = styles.get(key, ("2", "INFO"))
     return _c(label, code)
+
+
+def chain_lines(chains: Sequence[dict[str, Any]], indent: str = "  ") -> list[str]:
+    """Render correlated attack threads as a stage-by-stage block."""
+    lines: list[str] = []
+    for chain in chains:
+        stages = chain.get("stages") or []
+        path = " -> ".join(str(step.get("stage") or "?") for step in stages)
+        lines.append(
+            f" {severity_tag(chain.get('severity'))} "
+            f"{bold(str(chain.get('title') or ''))}"
+        )
+        lines.append(f"{indent}{dim('path')}   {path}")
+        summary = str(chain.get("summary") or "").strip()
+        if summary:
+            wrapped = re.sub(r"\s+", " ", summary)
+            for line in textwrap.wrap(wrapped, width=94):
+                lines.append(f"{indent}{line}")
+        break_at = str(chain.get("break_at") or "").strip()
+        if break_at:
+            lines.append(f"{indent}{dim('break')}  {break_at}")
+        lines.append("")
+    return lines
 
 
 def severity_counts(findings: Sequence[dict[str, Any]]) -> dict[str, int]:
@@ -250,6 +275,12 @@ def render_run_text(payload: dict[str, Any]) -> str:
                 lines.append(f"        {dim(detail[:150])}")
         lines.append("")
 
+    chains = payload.get("chains") or []
+    if chains:
+        lines.append(bold("ATTACK THREADS"))
+        lines.append("")
+        lines.extend(chain_lines(chains))
+
     counts = severity_counts(findings)
     summary = (
         f" {dot()} ".join(
@@ -257,8 +288,10 @@ def render_run_text(payload: dict[str, Any]) -> str:
         )
         or "no findings"
     )
+    thread_note = f" {dot()} {len(chains)} thread(s)" if chains else ""
     lines.append(
-        f"{_status_summary(executions)} {dot()} {len(findings)} finding(s) ({summary})"
+        f"{_status_summary(executions)} {dot()} {len(findings)} finding(s) "
+        f"({summary}){thread_note}"
     )
 
     narrative = (payload.get("narrative") or "").strip()
@@ -317,6 +350,33 @@ def render_markdown(payload: dict[str, Any]) -> str:
                 f"{title} | {detail} |"
             )
     lines.append("")
+
+    chains = payload.get("chains") or []
+    lines.append("## Attack threads")
+    lines.append("")
+    if not chains:
+        lines.append("No multi-stage path completed from these findings.")
+    else:
+        for chain in chains:
+            lines.append(
+                f"### {chain.get('severity', 'info').upper()} — {chain.get('title')}"
+            )
+            lines.append("")
+            lines.append(str(chain.get("summary") or ""))
+            lines.append("")
+            lines.append("| stage | technique | observation |")
+            lines.append("|---|---|---|")
+            for step in chain.get("stages") or []:
+                detail = str(step.get("detail") or "").replace("|", "\\|")[:160]
+                lines.append(
+                    f"| {step.get('stage')} | `{step.get('attack_id')}` | "
+                    f"{step.get('title')} — {detail} |"
+                )
+            break_at = str(chain.get("break_at") or "").strip()
+            if break_at:
+                lines.append("")
+                lines.append(f"**Break the path:** {break_at}")
+            lines.append("")
 
     lines.append("## Coverage")
     lines.append("")
