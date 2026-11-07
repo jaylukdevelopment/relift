@@ -80,6 +80,10 @@ jobs:
 
       - name: Desktop API starts, serves the UI and refuses without a token
         shell: bash
+        env:
+          # A runner image must not send a loopback request through a proxy.
+          no_proxy: 127.0.0.1,localhost
+          NO_PROXY: 127.0.0.1,localhost
         run: |
           set -euo pipefail
           python -c "
@@ -90,17 +94,18 @@ jobs:
           thread.start()
           host, port = server.server_address
           base = f'http://{host}:{port}'
-          html = urllib.request.urlopen(base + '/', timeout=10).read().decode()
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          html = opener.open(base + '/', timeout=10).read().decode()
           assert 'RELIFT_BOOT' in html, 'UI was served without the bootstrap token'
           request = urllib.request.Request(base + '/api/meta')
           try:
-              urllib.request.urlopen(request, timeout=10)
+              opener.open(request, timeout=10)
           except urllib.error.HTTPError as exc:
               assert exc.code == 401, exc.code
           else:
               raise SystemExit('API answered without a token')
           request.add_header('X-Relift-Token', token)
-          meta = json.loads(urllib.request.urlopen(request, timeout=10).read())
+          meta = json.loads(opener.open(request, timeout=10).read())
           assert meta['counts']['total'] > 0
           server.shutdown()
           print('desktop api ok:', meta['version'])
