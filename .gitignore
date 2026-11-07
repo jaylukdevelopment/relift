@@ -1,0 +1,40 @@
+# --- Relift local artefacts -------------------------------------------
+# Run output may contain hostnames, banners and internal addresses.
+.relift-runs/
+*.run.json
+
+# Scope files describe your environment. Keep the example, ignore the real ones.
+scope.json
+scope.*.json
+!examples/scope.example.json
+
+# Local provider config may reference API keys.
+relift.config.json
+
+# --- Secrets --------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editor / OS ----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

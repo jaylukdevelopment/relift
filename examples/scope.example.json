@@ -1,0 +1,22 @@
+{
+  "engagement": "homelab-2026-11",
+  "authorized_by": "Jay",
+  "organization": "Pixelcity",
+  "acknowledge_authorization": true,
+  "expires": "2026-12-31T23:59:59Z",
+  "allowed_hosts": [
+    "127.0.0.1",
+    "localhost",
+    "10.10.10.0/24",
+    "*.lab.pixelcity.dev"
+  ],
+  "denied_hosts": [
+    "10.10.10.1"
+  ],
+  "max_risk": "safe",
+  "allow_intrusive": false,
+  "allow_wide_ranges": false,
+  "rate_limit_rps": 5,
+  "ports": [22, 80, 443, 8000, 8080, 8443],
+  "notes": "Own lab only. Router (.1) excluded on purpose; it does not enjoy nmap."
+}

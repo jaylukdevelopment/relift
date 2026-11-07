@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "relift"
+version = "0.1.0"
+description = "Pixelcity red-team orchestration CLI for authorized infrastructure testing"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Jay (Pixelcity)" }]
+keywords = ["security", "red-team", "pentest", "cli", "pixelcity"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+license = { text = "Proprietary - all rights reserved" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+relift = "relift.cli:entry"
+
+[project.urls]
+Homepage = "https://github.com/jaylukdevelopment/relift"
+Source = "https://github.com/jaylukdevelopment/relift"
+Issues = "https://github.com/jaylukdevelopment/relift/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+relift = ["py.typed"]

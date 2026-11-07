@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install package
+        shell: bash
+        run: python -m pip install -e .
+
+      - name: Byte-compile every module
+        shell: bash
+        run: python -m compileall -q src/relift
+
+      - name: Catalogue renders and stays complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          relift list
+          relift list --json | python -c "
+          import json, sys
+          rows = json.load(sys.stdin)
+          assert len(rows) == 18, f'expected 18 techniques, got {len(rows)}'
+          assert sum(1 for r in rows if r['implemented']) == 12
+          print('catalogue ok:', len(rows), 'techniques')
+          "
+
+      - name: Provider matrix renders offline
+        shell: bash
+        run: relift providers
+
+      - name: Scope gate refuses an out-of-scope target
+        shell: bash
+        run: |
+          set -euo pipefail
+          relift init-scope --engagement ci --host 127.0.0.1 --out "$RUNNER_TEMP/scope.json"
+          set +e
+          relift scan --target https://example.com --scope "$RUNNER_TEMP/scope.json" --no-ai
+          code=$?
+          set -e
+          echo "exit code was $code"
+          test "$code" -eq 2
+
+      - name: Dry run sends nothing and needs --execute
+        shell: bash
+        run: |
+          set -euo pipefail
+          relift init-scope --engagement ci --host 127.0.0.1 --out "$RUNNER_TEMP/dry.json"
+          relift scan --target http://127.0.0.1:9 --scope "$RUNNER_TEMP/dry.json" --no-ai | tee "$RUNNER_TEMP/plan.txt"
+          grep -q "dry run" "$RUNNER_TEMP/plan.txt"

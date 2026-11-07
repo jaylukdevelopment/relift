@@ -1,0 +1,40 @@
+Relift — Proprietary Source-Available License
+Copyright (c) 2026 Pixelcity. All rights reserved.
+Author and developer: Jay
+
+STATUS
+------
+This project is NOT open source. It is an internal Pixelcity build being tested
+against Pixelcity-owned infrastructure. No license to use, copy, modify, merge,
+publish, distribute, sublicense or sell copies of the software is granted at this
+time.
+
+INTENT
+------
+The author intends to relicense this project (likely under Apache-2.0 or AGPL-3.0)
+once two conditions are met:
+
+  1. The authorisation gate in docs/03-RULES-OF-ENGAGEMENT.md has survived an
+     external review.
+  2. The attack catalogue has been classified and the destructive classes are
+     documented rather than shipped.
+
+Until then, treat this as "all rights reserved". If you were handed a copy, you
+were handed a copy; that is not a grant.
+
+AUTHORIZED USE ONLY
+-------------------
+This software performs active network operations. Running it against systems you
+do not own or have not been explicitly commissioned to test is illegal in most
+jurisdictions and is expressly contrary to the intent of the author and of
+Pixelcity. The authorisation gate in this software exists to make that boundary
+mechanical rather than a matter of good intentions.
+
+NO WARRANTY
+-----------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL PIXELCITY OR THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
