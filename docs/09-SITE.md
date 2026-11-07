@@ -1,99 +1,57 @@
-# The Relift site
+# The public site and download mirror
 
-The product site lives in `site/`: Next.js 15 (App Router, React 19), TypeScript,
-plain CSS tokens, and one Three.js scene. No CSS framework, no animation library,
-no analytics.
+The page is maintained separately from this repository. This document records
+what is public, where it is served from, and the two things the site reads out of
+this repository.
 
-- **Landing** — `/` — split hero with a working scope gate, a scroll-driven
-  Three.js "descent" through the four layers the tool walks, three states of a
-  real finding, the thread panel with margin notes, a plan/execute example, four
-  measured marks, FAQ and a closing call to action.
-- **Download** — `/download` — binaries per platform from the GitHub release,
-  with checksums, plus the package and from-source routes.
-- **Docs** — `/docs` and `/docs/<slug>` — the repository's own `docs/*.md`,
-  copied in at build time by `site/scripts/sync-docs.mjs`.
+| URL | Serves |
+|---|---|
+| <https://pixelcity.dev/lab/relift> | Landing page, scroll scenes, scope-gate demo |
+| <https://pixelcity.dev/lab/relift/download> | Download cards, install command, checksums |
+| <https://pixelcity.dev/lab/relift/docs> | This `docs/` directory, rendered at image build |
+| <https://pixelcity.dev/lab/relift/install.sh> | The checksum-verifying installer |
+| <https://pixelcity.dev/lab/relift/downloads/> | Linux binary mirror used by the installer |
 
-## Run it locally
+`relift.pixelcity.dev` redirects to the lab path. `pixelcity.top` and
+`www.pixelcity.top` serve the same container.
 
-```bash
-cd site
-npm install
-npm run sync-docs      # refresh content/docs from ../docs
-npm run dev            # http://localhost:3000
-```
+## Serving
 
-The scope gate, the scene and the state toggle are client components; everything
-else is rendered on the server. The reveal animation only moves content — nothing
-is hidden when the script fails.
-
-## Build the image
-
-The build context is the repository root, because the docs are part of the image:
+The site is a Next.js container, `relift-site`, attached to the external
+`pixelcity_net` network. Caddy (`/opt/caddy/Caddyfile`) terminates TLS and routes
+`/lab/relift*` to `relift-site:3000`; everything else on `pixelcity.dev` goes to
+the main site. The container listens on 3000, binds no host port, and runs as a
+non-root user.
 
 ```bash
+# on the server
+cd /opt/relift-site/src
 docker build -f site/Dockerfile -t relift-site:latest .
-docker run -d --rm -p 3000:3000 --name relift-site relift-site:latest
+cd /opt/relift-site && docker compose up -d
 ```
 
-The image is a three-stage build (deps / build / runner) and runs `next start`'s
-standalone server as a non-root user on port 3000.
-
-## Deploy
-
-The site runs on `pixelcity.dev` as the container `relift-site`, attached to the
-external `pixelcity_net` network, and is published by the Caddy container in
-`/opt/caddy`.
-
-```bash
-# on the build machine
-docker build -f site/Dockerfile -t relift-site:latest .
-docker save relift-site:latest | gzip -1 | ssh root@pixelcity.dev 'gunzip | docker load'
-
-# on the server (compose file is in the repository at site/docker-compose.yml)
-ssh root@pixelcity.dev 'mkdir -p /opt/relift-site'
-scp site/docker-compose.yml root@pixelcity.dev:/opt/relift-site/
-ssh root@pixelcity.dev 'cd /opt/relift-site && docker compose up -d'
-```
-
-Caddy block (already in `/opt/caddy/Caddyfile`):
-
-```
-http://relift.pixelcity.dev {
-	redir https://relift.pixelcity.dev{uri} permanent
-}
-
-relift.pixelcity.dev {
-	encode zstd gzip
-	import accesslog
-	reverse_proxy relift-site:3000 {
-		header_down -Via
-		header_down -Server
-	}
-}
-```
-
-Reload Caddy after editing (it validates first):
+Caddy validates a new config before reloading:
 
 ```bash
 docker exec caddy caddy validate --config /etc/caddy/Caddyfile
 docker exec caddy caddy reload  --config /etc/caddy/Caddyfile
 ```
 
-Back up the Caddyfile before any edit: `cp Caddyfile Caddyfile.bak-$(date +%F-%H%M)`.
+Back up the Caddyfile first: `cp Caddyfile Caddyfile.bak-$(date +%F-%H%M)`.
+
+## What the site takes from this repository
+
+1. **Documentation.** At image build, `docs/` is copied in and the docs pages are
+   generated from the Markdown. A doc fix reaches the site only on redeploy.
+2. **The Linux mirror.** The binaries in `/lab/relift/downloads` are the same
+   files published on the GitHub release, plus their `.sha256` sidecars. The
+   installer tries this mirror first and falls back to the GitHub release.
+
+The Windows executables are not mirrored; the download page links the GitHub
+release for those. See [`10-RELEASES.md`](10-RELEASES.md) for the asset matrix.
 
 ## Checks
 
-```bash
-npx tsc --noEmit                 # types
-npm run build                    # production build, all routes pre-rendered
-node <taste-skill>/scripts/lint.mjs app components
-node <taste-skill>/scripts/inspect.mjs http://127.0.0.1:3000
-```
-
-The last two are the design gates described in the skill; the inspector reports
-0 FAIL at 1440, 768 and 390. Its two remaining warnings are deliberate: there is
-no footage (the WebGL scene is the moving image) and the closing panel is a
-left-aligned statement over a full field of colour.
-
-Screenshots in `site/public/shots/` are real captures of the desktop application
-from a lab run (`node site/scripts/shoot.mjs http://127.0.0.1:8796`), not mock-ups.
+The site repository owns its own gates (type check, production build, design
+inspection). For this repository, the only relevant check is that every internal
+documentation link resolves and that a release keeps the docs accurate.
