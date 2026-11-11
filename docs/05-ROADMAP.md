@@ -19,7 +19,7 @@ calendar says so.
 **Exit:** `list` renders; a lab host produces ≥6 executions; `--no-ai` findings are
 identical to an AI run.
 
-## v0.2 — Depth (this tree, 0.2.0)
+## v0.2 — Depth (shipped in 0.2.0)
 
 **Theme:** make one run worth reading twice, and let it read the things that hold
 the data.
@@ -48,7 +48,53 @@ the data.
 credential is verified once and graded; the desktop app runs a scan through the same
 scope gate as the CLI.
 
-## v0.3 — Breadth
+## v0.3 — Coverage without dependencies (this tree, 0.3.0)
+
+**Theme:** the techniques that matter should not wait for an external binary.
+
+- [x] **Mail posture**: SPF, DMARC and MX graded from read-only resolver queries
+      (`recon.mail_posture`)
+- [x] **CORS policy audit**: reflected origin with and without credentials
+      (`web.cors_policy`)
+- [x] **Cookie flag audit**: Secure, HttpOnly, SameSite, Domain scope, session
+      cookies called out (`web.cookie_flags`)
+- [x] **TLS cipher acceptance** from the standard library; the `sslscan`
+      dependency is gone (`tls.cipher_preference`)
+- [x] **Bounded well-known-path probe**: fixed 26-path list, 40 requests,
+      404 calibration, soft-404 abort (`web.dir_bruteforce`)
+- [x] **Threads** for CORS session theft and mail spoofing
+- [x] **First-run CLI**: `doctor`, `explain`, `list --search`, `attack --dry-run`,
+      positional targets
+- [x] **Port sweep** runs in a small thread pool under the same rate-limit lock
+
+**Exit:** a host with no nmap/nuclei/nikto installed still produces a run with these
+findings, and every claim the modules make is backed by a test. Met on pixelcity.dev
+(no external binaries present).
+
+## v0.4 — Proof, not just detection (this tree, 0.4.0)
+
+**Theme:** a finding should say what an attacker could actually do, and a short
+report should say what was not tested.
+
+- [x] **Codebase target family**: `relift code PATH` audits files only — no scope
+      file, no socket, its own audit line
+- [x] **Hardcoded secrets** with redaction before the value reaches any output
+- [x] **Dangerous sinks**, labelled as sinks rather than exploits
+- [x] **Dependency advisories** from OSV, pinned versions only, with per-advisory
+      severity, summary and fixed version (batch ids, then capped detail lookups)
+- [x] **SQL injection proof of impact**: error-based cast returns the engine version
+- [x] **Path traversal proof**: fixed payloads, `/etc/passwd`/`win.ini` marker only
+- [x] **Open redirect proof**: reserved `.invalid` host, exact `Location` match
+- [x] **Coverage report** in text, markdown and JSON; the run record stores what was
+      planned so skipped techniques are named with a reason
+- [x] **Port sweep includes the target's own port** in an authored attack scope
+
+**Exit:** on the lab target, injection, traversal and redirect each produce a
+critical/high finding carrying proof; `relift code` finds a real CVE with its fixed
+version; and a run against pixelcity.dev lists 32 techniques with 26 tested and the
+rest explained. Met.
+
+## v0.3.1 — Breadth
 
 **Theme:** internal network, not just one URL.
 
@@ -56,14 +102,12 @@ scope gate as the CLI.
       artefact per host, one combined report
 - [ ] **Passive subdomain inventory** from certificate transparency logs
       (`recon.passive_subdomains`; still no DNS brute-force)
-- [ ] **Directory enumeration policy** for `web.dir_bruteforce`: a wordlist budget,
-      404 calibration and a rate ceiling, or it stays a spec
 - [ ] **Scheduled assessments**: a documented `cron`/systemd-timer recipe plus a
       `--fail-on <severity>` exit code for CI
 - [ ] **`relift diff <runA> <runB>`** — new / fixed / changed findings and threads
 - [ ] **HTML report**, single self-contained file, opens offline
-- [ ] `tls.cipher_preference` once `sslscan` output shape is pinned
-- [ ] Bounded parallel execution sharing one global rate budget
+- [ ] Whole-plan parallel execution sharing one global rate budget (the port sweep
+      already does this inside one module)
 - [ ] Test suite: scope matcher, target parsing, runner, chains rules, each module
       against a local fixture server
 

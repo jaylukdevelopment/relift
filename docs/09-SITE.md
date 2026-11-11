@@ -55,7 +55,7 @@ release for those. See [`10-RELEASES.md`](10-RELEASES.md) for the asset matrix.
 ## Refreshing the mirror after a tag
 
 ```bash
-gh release download v0.2.0 -R jaylukdevelopment/relift \
+gh release download v0.4.0 -R jaylukdevelopment/relift \
   -p 'relift-linux-x64*' -p 'relift-desktop-linux-x64*' -D site/public/downloads
 sha256sum -c site/public/downloads/*.sha256
 ```

@@ -75,7 +75,33 @@ def _clean_behaviour(path):
     return BASE_BODY, 200
 
 
+def _proof_behaviour(path):
+    """The quote errors like MySQL; the cast leaks the version in the error."""
+    value = _parameter(path)
+    if "EXTRACTVALUE" in value:
+        return "<p>XPATH syntax error: '~8.0.36'</p>", 500
+    if "'" in value:
+        return (
+            "<h1>Database error</h1><p>You have an error in your SQL syntax; "
+            "check the manual that corresponds to your MySQL server version</p>",
+            500,
+        )
+    return BASE_BODY, 200
+
+
 # -- positive results --------------------------------------------------------
+def test_proof_of_impact_extracts_the_engine_version(serve_http, scan_ctx):
+    findings, log = _run(serve_http, scan_ctx, _proof_behaviour)
+    finding = findings[0]
+
+    assert finding.evidence["injectable"] is True
+    assert finding.evidence["proof_of_impact"]["version"] == "8.0.36"
+    assert finding.evidence["proof_of_impact"]["engine"] == "mysql"
+    assert "reads mysql data" in finding.title
+    assert "No table rows" in finding.detail
+    assert len(log) <= MAX_REQUESTS
+
+
 def test_error_signature_is_reported_as_injection(serve_http, scan_ctx):
     findings, log = _run(serve_http, scan_ctx, _error_behaviour)
     assert len(findings) == 1

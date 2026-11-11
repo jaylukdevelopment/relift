@@ -18,8 +18,8 @@ project site so the one-line installer works without a GitHub account.
 4. Commit, tag, push:
 
    ```bash
-   git commit -am "Release 0.2.0"
-   git tag -a v0.2.0 -m "Relift 0.2.0"
+   git commit -am "Release 0.4.0"
+   git tag -a v0.4.0 -m "Relift 0.4.0"
    git push origin main --tags
    ```
 

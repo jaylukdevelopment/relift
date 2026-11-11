@@ -196,6 +196,8 @@ def test_attack_authors_a_scope_and_runs(tmp_path, monkeypatch, capsys):
     assert document["allowed_hosts"].count("127.0.0.1") == 1
     assert document["max_risk"] == "passive"
     assert document["allow_intrusive"] is False
+    # The target's own port must be swept, or `attack host:8099` never sees 8099.
+    assert 9 in document["ports"]
 
 
 def test_attack_intrusive_depth_authorises_the_intrusive_ceiling(tmp_path, monkeypatch, capsys):
@@ -221,3 +223,76 @@ def test_desktop_command_is_registered():
     args = _build_parser().parse_args(["desktop", "--no-window", "--port", "0"])
     assert args.command == "desktop"
     assert args.no_window is True
+
+
+def test_attack_accepts_a_positional_target_and_a_dry_run(write_scope, capsys):
+    scope = write_scope()
+    code = main(
+        ["--no-color", "attack", "127.0.0.1", "--scope", str(scope), "--dry-run", "--no-ai"]
+    )
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "dry run" in output
+    assert "127.0.0.1" in output
+
+
+def test_attack_without_a_target_is_a_usage_error(capsys):
+    assert main(["--no-color", "attack", "--dry-run"]) == 3
+    assert "target is required" in capsys.readouterr().err
+
+
+def test_list_search_filters_by_text_and_reports_no_match(capsys):
+    assert main(["--no-color", "list", "--search", "cors", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert "web.cors_policy" in [row["id"] for row in rows]
+    # Every hit has to actually mention the needle somewhere.
+    assert all(
+        "cors" in (row["id"] + row["name"] + row["summary"]).lower() for row in rows
+    )
+
+    assert main(["--no-color", "list", "--search", "no-such-technique"]) == 3
+    assert "no technique matches" in capsys.readouterr().err
+
+
+def test_explain_describes_a_technique_and_its_module(capsys):
+    assert main(["--no-color", "explain", "web.dir_bruteforce", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["id"] == "web.dir_bruteforce"
+    assert payload["module"] == "DirectoryProbeModule"
+    assert payload["risk"] == "intrusive"
+    # An intrusive technique is only planned under the lab profile.
+    assert payload["profiles"] == ["lab"]
+
+
+def test_explain_refuses_an_unknown_id(capsys):
+    assert main(["--no-color", "explain", "web.nope"]) == 3
+    assert "unknown technique" in capsys.readouterr().err
+
+
+def test_doctor_reports_paths_and_tools(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RELIFT_SCOPE_DIR", str(tmp_path / "scopes"))
+    assert main(["--no-color", "doctor", "127.0.0.1", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    checks = {row["check"]: row for row in payload["checks"]}
+    assert checks["python"]["level"] == "ok"
+    assert checks["target"]["level"] == "ok"
+    assert "external tools" in checks
+    assert payload["failures"] == 0
+
+
+def test_doctor_accepts_a_nested_scope_directory_that_does_not_exist_yet(
+    tmp_path, monkeypatch, capsys
+):
+    # /root/.relift/scopes on a fresh host: two levels that mkdir -p creates.
+    monkeypatch.setenv("RELIFT_SCOPE_DIR", str(tmp_path / "a" / "b" / "scopes"))
+    assert main(["--no-color", "doctor", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    scope = {row["check"]: row for row in payload["checks"]}["scope dir"]
+    assert scope["level"] == "warn"
+    assert "will be created" in scope["detail"]
+
+
+def test_doctor_text_names_the_scope_directory(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("RELIFT_SCOPE_DIR", str(tmp_path / "scopes"))
+    assert main(["--no-color", "doctor"]) == 0
+    assert "scope dir" in capsys.readouterr().out

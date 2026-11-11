@@ -147,16 +147,22 @@ def _suid_surface() -> tuple[list[str], list[str], list[str]]:
     suid: list[str] = []
     sgid: list[str] = []
     caps: list[str] = []
+    # On a merged-/usr host /bin is a symlink to /usr/bin, so the same binary
+    # is reachable under two paths. Count it once: a doubled inventory of the
+    # same file reads as twice the surface.
+    seen: set[str] = set()
     for root in SCAN_DIRS:
         if not os.path.isdir(root):
             continue
         for path in _walk_files(root):
             try:
                 info = os.lstat(path)
+                identity = os.path.realpath(path)
             except OSError:
                 continue
-            if not stat.S_ISREG(info.st_mode):
+            if identity in seen or not stat.S_ISREG(info.st_mode):
                 continue
+            seen.add(identity)
             if info.st_mode & stat.S_ISUID and len(suid) < MAX_SUID:
                 suid.append(path)
             if info.st_mode & stat.S_ISGID and len(sgid) < MAX_SUID:
@@ -411,19 +417,47 @@ class HostAuditModule(Module):
                 )
             )
 
-        risky_sudo = [
-            rule for rule in sudo_rules
-            if "NOPASSWD" in rule.upper() or "ALL=(ALL" in rule.upper().replace(" ", "")
+        # "NOPASSWD" and "ALL=(ALL)" are different claims: the second still
+        # prompts for a password. Reporting them as one thing turns the
+        # conventional Debian sudo group into a passwordless-root finding.
+        passwordless = [
+            rule for rule in sudo_rules if "nopasswd" in rule.lower()
         ]
-        if risky_sudo:
+        unrestricted = [
+            rule
+            for rule in sudo_rules
+            if rule not in passwordless
+            and "all=(all" in rule.lower().replace(" ", "")
+        ]
+        if passwordless:
             findings.append(
                 finding(
                     ctx,
                     self.attack_id,
-                    f"{len(risky_sudo)} sudo rule(s) grant broad passwordless rights",
+                    f"{len(passwordless)} sudo rule(s) run without a password",
                     Severity.MEDIUM,
-                    detail=", ".join(risky_sudo[:4]),
-                    evidence={"rules": risky_sudo},
+                    detail=(
+                        ", ".join(passwordless[:4])
+                        + (
+                            f" · plus {len(unrestricted)} unrestricted rule(s) "
+                            "that still ask for a password"
+                            if unrestricted
+                            else ""
+                        )
+                    ),
+                    evidence={"rules": passwordless, "unrestricted": unrestricted},
+                )
+            )
+        elif unrestricted:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    f"{len(unrestricted)} sudo rule(s) grant unrestricted rights",
+                    Severity.LOW,
+                    detail=", ".join(unrestricted[:4])
+                    + " · a password is still required; this is the normal sudo-group shape",
+                    evidence={"rules": unrestricted},
                 )
             )
         elif sudo_rules:

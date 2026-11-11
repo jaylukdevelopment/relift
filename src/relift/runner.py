@@ -106,6 +106,7 @@ def execute(plan: Plan, ctx: ScanContext, audit: AuditLog | None = None) -> RunR
         engagement=ctx.scope.engagement,
         scope_sha256=ctx.scope.digest,
         authorized_by=ctx.scope.authorized_by,
+        planned=list(plan.ids),
     )
 
     for spec in plan.specs:

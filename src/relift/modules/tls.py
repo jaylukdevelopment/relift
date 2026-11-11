@@ -1,4 +1,4 @@
-"""TLS techniques: certificate inspection and protocol version support."""
+"""TLS techniques: certificate inspection, version support, cipher audit."""
 
 from __future__ import annotations
 
@@ -247,6 +247,164 @@ def _flatten(name_tuples) -> str:
                 continue
             parts.append(f"{key}={value}")
     return ", ".join(parts)
+
+
+# Legacy cipher suites worth naming. Each is probed with a single pinned
+# handshake; a server that refuses it never negotiates it with a real client.
+# ``@SECLEVEL=0`` is what lets this OpenSSL build even offer 3DES and RC4.
+LEGACY_CIPHERS: tuple[tuple[str, str, Severity], ...] = (
+    ("RC4-SHA", "RC4", Severity.HIGH),
+    ("DES-CBC3-SHA", "3DES", Severity.HIGH),
+    ("NULL-SHA", "no encryption (NULL)", Severity.HIGH),
+    ("EXPORT", "export-grade", Severity.HIGH),
+    ("AES128-SHA", "AES-CBC-128", Severity.MEDIUM),
+    ("AES256-SHA", "AES-CBC-256", Severity.MEDIUM),
+    ("ECDHE-RSA-AES128-SHA", "ECDHE-AES-CBC-128", Severity.MEDIUM),
+    ("ECDHE-RSA-AES256-SHA", "ECDHE-AES-CBC-256", Severity.MEDIUM),
+)
+
+
+def accepts_cipher(host: str, port: int, spec: str, timeout: float) -> bool | None:
+    """Whether TLS 1.2 negotiates one specific suite.
+
+    ``None`` means this OpenSSL build cannot even offer the suite, which is not
+    the server's answer and must not be reported as one.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.set_ciphers(f"{spec}:@SECLEVEL=0")
+    except (ValueError, ssl.SSLError):
+        return None
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=host):
+                return True
+    except (ssl.SSLError, OSError):
+        return False
+
+
+class CipherPreferenceModule(Module):
+    """Which TLS 1.2 suites the server still accepts, and what it picks.
+
+    No external tool: OpenSSL is already a dependency of the interpreter, so
+    pinning a cipher string is enough to ask the question. TLS 1.3 suites are
+    fixed by the protocol and are not configurable, so they are recorded from
+    the default handshake rather than probed.
+    """
+
+    attack_id = "tls.cipher_preference"
+
+    def run(self, ctx: ScanContext):
+        if ctx.target.scheme != "https":
+            return [
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "Not a TLS target",
+                    Severity.INFO,
+                    detail="tls.* modules only apply to https:// targets.",
+                    evidence={"scheme": ctx.target.scheme},
+                )
+            ]
+        if ctx.dry_run:
+            return []
+
+        host, port = ctx.target.host, ctx.target.port
+        try:
+            _cert, _der, protocol, cipher = handshake(host, port, ctx.timeout, False)
+        except (ssl.SSLError, OSError) as exc:
+            return [
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "TLS handshake failed",
+                    Severity.INFO,
+                    detail=str(exc),
+                    evidence={"host": host, "port": port},
+                )
+            ]
+
+        accepted: list[tuple[str, str, Severity]] = []
+        unavailable: list[str] = []
+        for spec, label, severity in LEGACY_CIPHERS:
+            verdict = accepts_cipher(host, port, spec, ctx.timeout)
+            if verdict is None:
+                unavailable.append(spec)
+            elif verdict:
+                accepted.append((spec, label, severity))
+
+        findings = []
+        if accepted:
+            severity = (
+                Severity.HIGH
+                if any(sev is Severity.HIGH for _s, _l, sev in accepted)
+                else Severity.MEDIUM
+            )
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "Legacy cipher suites accepted: "
+                    + ", ".join(label for _spec, label, _sev in accepted),
+                    severity,
+                    detail=(
+                        "A client can negotiate these at TLS 1.2. Prefer AEAD "
+                        "suites only ([ECDHE-]AES-GCM, CHACHA20-POLY1305) and "
+                        "raise the OpenSSL security level to 2."
+                    ),
+                    evidence={
+                        "accepted": [label for _spec, label, _sev in accepted],
+                        "accepted_specs": [spec for spec, _l, _s in accepted],
+                        "worst": severity.value,
+                        "negotiated": cipher[0] if cipher else "",
+                        "protocol": protocol,
+                    },
+                )
+            )
+        else:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "No legacy cipher suite negotiated",
+                    Severity.INFO,
+                    detail=(
+                        f"{len(LEGACY_CIPHERS) - len(unavailable)} suite(s) probed at "
+                        "TLS 1.2, none accepted."
+                    ),
+                    evidence={
+                        "accepted": [],
+                        "unavailable": unavailable,
+                        "probed": len(LEGACY_CIPHERS) - len(unavailable),
+                        "negotiated": cipher[0] if cipher else "",
+                        "protocol": protocol,
+                    },
+                )
+            )
+
+        findings.append(
+            finding(
+                ctx,
+                self.attack_id,
+                f"Server prefers {cipher[0] if cipher else 'an unnamed suite'} ({protocol})",
+                Severity.INFO,
+                detail=(
+                    "Recorded from the default handshake; TLS 1.3 suites are "
+                    "fixed by the protocol and are not configurable."
+                ),
+                evidence={
+                    "negotiated": cipher[0] if cipher else "",
+                    "protocol": protocol,
+                    "probed": len(LEGACY_CIPHERS) - len(unavailable),
+                    "unavailable": unavailable,
+                },
+            )
+        )
+        return findings
 
 
 def supports_version(host: str, port: int, version, timeout: float) -> bool:

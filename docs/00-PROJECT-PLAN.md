@@ -5,8 +5,9 @@
 | Project | Relift |
 | Company | Pixelcity |
 | Developer / owner | Jay |
-| Version | 0.2.0 (public, source-available) |
-| Status | Engine + database auditing + host audit + attack threads + desktop app |
+| Version | 0.4.0 (public, source-available) |
+| Status | Engine + database auditing + host audit + codebase audit + attack threads
+           + desktop app, with bounded proof-of-impact attacks and a coverage report |
 | License | Proprietary for now, open source later (see `LICENSE`) |
 
 ---
@@ -92,6 +93,26 @@ which of them have actually been run against a given target.
 - [ ] HTML report, single self-contained file
 - [ ] `relift diff runA runB` — what changed since last sweep
 - **Exit criteria (remaining):** two consecutive runs produce a readable diff; HTML opens offline.
+
+### M2.5 — Coverage without dependencies (shipped in 0.3.0)
+- [x] Mail posture: SPF, DMARC and MX grading from read-only resolver queries
+- [x] CORS policy audit with the reflected-origin and credentials cases separated
+- [x] Cookie flag and scope audit, session cookies called out
+- [x] TLS cipher acceptance from the standard library (`sslscan` dependency removed)
+- [x] Bounded, calibrated well-known-path probe (fixed list, 40 requests, soft-404 abort)
+- [x] Attack threads for CORS session theft and mail spoofing
+- [x] First-run CLI: `doctor`, `explain`, `list --search`, `attack --dry-run`, positional targets
+- **Exit criteria:** a fresh machine with no external binaries produces a run with
+  these findings, and every new claim is backed by a unit test.
+
+### M2.6 — Proof and coverage (shipped in 0.4.0)
+- [x] Codebase family: secrets (redacted), dangerous sinks, OSV advisories with fixes
+- [x] SQL injection proof of impact via error-based version extraction
+- [x] Path traversal proof via `/etc/passwd` / `win.ini` marker, marker only
+- [x] Open redirect confirmation against a reserved `.invalid` host
+- [x] Coverage block in text/markdown/JSON naming what was tested, skipped and why
+- **Exit criteria:** each proof is demonstrated against a deliberately vulnerable lab
+  app, and a scan that tested little says so instead of reading as clean.
 
 ### M3 — Breadth
 - [ ] Subdomain enumeration from a passive source (no brute-force) as a module

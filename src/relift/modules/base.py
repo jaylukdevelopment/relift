@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -36,6 +37,9 @@ class HttpResponse:
     url: str
     status: int = 0
     headers: dict[str, str] = field(default_factory=dict)
+    # Duplicates matter: a response carries one Set-Cookie per cookie, and
+    # collapsing them into a dict loses every cookie but the last.
+    header_list: list[tuple[str, str]] = field(default_factory=list)
     body: bytes = b""
     elapsed_ms: int = 0
     error: str = ""
@@ -46,6 +50,11 @@ class HttpResponse:
 
     def header(self, name: str) -> str:
         return self.headers.get(name.lower(), "")
+
+    def headers_all(self, name: str) -> list[str]:
+        """Every value for a header, in wire order."""
+        wanted = name.lower()
+        return [value for key, value in self.header_list if key.lower() == wanted]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -136,10 +145,16 @@ class ScanContext:
     # Operator-supplied credentials, already validated by the CLI. Each entry
     # is {"username", "password", "engine", "host", "port", "note"}.
     db_creds: list[dict[str, Any]] = field(default_factory=list)
-    # Operator-named injection point for web.sql_injection_check.
+    # Operator-named parameter attack point, shared by the parameter techniques
+    # (SQL injection, traversal, open redirect). One point per run, by design.
     inject_url: str = ""
     inject_param: str = ""
+    # code.dependencies asks OSV over HTTPS; --no-osv turns that one call off.
+    osv: bool = True
     _last_net: float = field(default=0.0, repr=False)
+    # Parallel modules (the port sweep) still share one budget: the lock is
+    # what keeps the rate limit a control rather than a suggestion.
+    _budget_lock: Any = field(default_factory=threading.Lock, repr=False)
 
     # -- budgeting ---------------------------------------------------------
     def throttle(self) -> None:
@@ -148,17 +163,27 @@ class ScanContext:
         if rps <= 0:
             return
         gap = 1.0 / rps
-        elapsed = time.monotonic() - self._last_net
-        if elapsed < gap:
-            time.sleep(gap - elapsed)
-        self._last_net = time.monotonic()
+        with self._budget_lock:
+            elapsed = time.monotonic() - self._last_net
+            if elapsed < gap:
+                time.sleep(gap - elapsed)
+            self._last_net = time.monotonic()
 
     # -- HTTP --------------------------------------------------------------
     def http_get(
-        self, path: str = "/", method: str = "GET", scheme: str | None = None
+        self,
+        path: str = "/",
+        method: str = "GET",
+        scheme: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> HttpResponse:
         """Request on the target origin. ``scheme`` overrides a db:// scheme
-        for HTTP-speaking datastores (Elasticsearch, CouchDB)."""
+        for HTTP-speaking datastores (Elasticsearch, CouchDB).
+
+        ``headers`` exists for the handful of techniques that must send one
+        extra request header (an Origin for CORS, a Referer for cache tests).
+        It cannot change the host, the scheme or the method budget.
+        """
         url = self.target.url(path)
         override = (scheme or "").strip().lower()
         if override in ("http", "https"):
@@ -171,7 +196,7 @@ class ScanContext:
             url = f"{override}://{authority}" + (
                 path if path.startswith("/") else "/" + path
             )
-        return self._fetch(url, method)
+        return self._fetch(url, method, headers)
 
     def http_get_url(self, url: str, method: str = "GET") -> HttpResponse:
         """Fetch an absolute URL, but only on the authorised target host.
@@ -190,21 +215,30 @@ class ScanContext:
             return HttpResponse(url=url, error=f"refused: scheme {parts.scheme!r}")
         return self._fetch(url, method)
 
-    def _fetch(self, url: str, method: str = "GET") -> HttpResponse:
+    def _fetch(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
         if self.dry_run:
             return HttpResponse(url=url, error="dry-run: request not sent")
         self.throttle()
         request = urllib.request.Request(url, method=method)
         request.add_header("User-Agent", USER_AGENT)
         request.add_header("Accept", "*/*")
+        for key, value in (headers or {}).items():
+            request.add_header(str(key), str(value))
         opener = urllib.request.build_opener(_NoRedirect)
         started = time.monotonic()
         try:
             with opener.open(request, timeout=self.timeout) as response:
+                pairs = list(response.headers.items())
                 return HttpResponse(
                     url=url,
                     status=response.status,
-                    headers={k.lower(): v for k, v in response.headers.items()},
+                    headers={k.lower(): v for k, v in pairs},
+                    header_list=pairs,
                     body=response.read(MAX_BODY),
                     elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
@@ -215,10 +249,12 @@ class ScanContext:
                 body = exc.read(MAX_BODY)
             except (OSError, ValueError):
                 pass
+            pairs = list((exc.headers or {}).items())
             return HttpResponse(
                 url=url,
                 status=exc.code,
-                headers={k.lower(): v for k, v in (exc.headers or {}).items()},
+                headers={k.lower(): v for k, v in pairs},
+                header_list=pairs,
                 body=body,
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
@@ -301,6 +337,36 @@ def finding(
         references=list(references or []),
         confidence=confidence,
     )
+
+
+def swap_query_param(url: str, param: str, value: str) -> str:
+    """Replace exactly one query parameter, preserving every other one."""
+    parts = urllib.parse.urlsplit(url)
+    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    replaced = False
+    updated: list[tuple[str, str]] = []
+    for key, current in pairs:
+        if not replaced and key == param:
+            updated.append((key, value))
+            replaced = True
+        else:
+            updated.append((key, current))
+    if not replaced:
+        updated.append((param, value))
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(updated), parts.fragment)
+    )
+
+
+def query_param_value(url: str, param: str) -> str | None:
+    """The current value of one query parameter, or None when it is absent."""
+    pairs = urllib.parse.parse_qsl(
+        urllib.parse.urlsplit(url).query, keep_blank_values=True
+    )
+    for key, value in pairs:
+        if key == param:
+            return value
+    return None
 
 
 def tool_path(name: str) -> str | None:

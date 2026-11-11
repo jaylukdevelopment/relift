@@ -1,12 +1,14 @@
-"""Recon techniques: resolution, HTTP fingerprinting, port sweep, versions."""
+"""Recon techniques: resolution, mail posture, fingerprinting, port sweep."""
 
 from __future__ import annotations
 
 import ipaddress
 import re
 import socket
+from concurrent.futures import ThreadPoolExecutor
 
 from ..models import Severity
+from . import dnsproto
 from .base import MissingTool, Module, ScanContext, finding, run_tool, tool_path
 
 _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
@@ -83,6 +85,295 @@ class DnsModule(Module):
         ]
 
 
+def _spf_qualifier(record: str) -> str:
+    """The ``all`` mechanism's qualifier: '-', '~', '?' or '+' (default)."""
+    for token in record.split()[1:]:
+        lowered = token.strip().lower()
+        if lowered == "all":
+            return "+"
+        if lowered.endswith("all") and lowered[0] in "-~?+" and lowered[1:] == "all":
+            return lowered[0]
+    return "missing"
+
+
+def _spf_lookup_count(record: str) -> int:
+    """Mechanisms that cost a DNS lookup against SPF's limit of 10.
+
+    ``a``, ``mx`` and ``ptr`` count with or without an argument, which is why
+    a bare mechanism is matched separately from its ``name:`` form.
+    """
+    counting_prefixes = ("include:", "a:", "mx:", "ptr:", "exists:", "redirect=")
+    bare = ("a", "mx", "ptr")
+    total = 0
+    for token in record.split()[1:]:
+        lowered = token.lower().lstrip("+-~?")
+        if lowered in bare or lowered.startswith(counting_prefixes):
+            total += 1
+    return total
+
+
+def _dmarc_field(record: str, key: str) -> str:
+    for part in record.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name.strip().lower() == key:
+            return value.strip()
+    return ""
+
+
+class MailPostureModule(Module):
+    """SPF, DMARC and MX for the target's name — the spoofing surface.
+
+    Every other module asks what this host serves. This one asks whether
+    anyone on the internet can send mail *as* this domain, which is the part of
+    an attack surface that never appears in a port scan. Read-only DNS: two to
+    four queries against the resolver, none against the target.
+    """
+
+    attack_id = "recon.mail_posture"
+
+    def run(self, ctx: ScanContext):
+        host = ctx.target.host.strip("[]").lower()
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return [
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "Mail posture not applicable to an address",
+                    Severity.INFO,
+                    detail="SPF and DMARC are properties of a domain name, not an IP.",
+                    evidence={"host": host},
+                )
+            ]
+        if ctx.dry_run:
+            return []
+
+        timeout = min(4.0, ctx.timeout)
+        domain = host
+        txt, txt_error = dnsproto.lookup_txt(domain, timeout)
+        spf = next((value for value in txt if value.lower().startswith("v=spf1")), "")
+
+        # A https://www.example.com target still has its mail policy on the
+        # parent name; ask once more rather than reporting a false absence.
+        fallback = ""
+        if not spf and domain.startswith("www.") and domain.count(".") >= 2:
+            parent = domain[4:]
+            parent_txt, parent_error = dnsproto.lookup_txt(parent, timeout)
+            parent_spf = next(
+                (value for value in parent_txt if value.lower().startswith("v=spf1")),
+                "",
+            )
+            if parent_spf:
+                domain, spf, fallback = parent, parent_spf, parent
+            txt_error = txt_error or parent_error
+
+        mx, mx_error = dnsproto.lookup_mx(domain, timeout)
+        dmarc_txt, dmarc_error = dnsproto.lookup_txt(f"_dmarc.{domain}", timeout)
+        dmarc = next(
+            (value for value in dmarc_txt if value.lower().startswith("v=dmarc1")), ""
+        )
+
+        qualifier = _spf_qualifier(spf) if spf else "missing"
+        policy = _dmarc_field(dmarc, "p").lower() if dmarc else "missing"
+        rua = _dmarc_field(dmarc, "rua") if dmarc else ""
+        spf_ok = qualifier in ("-",)
+        dmarc_ok = policy in ("quarantine", "reject")
+
+        errors = [
+            text
+            for text in (txt_error, mx_error, dmarc_error)
+            if text
+        ]
+        evidence = {
+            "domain": domain,
+            "queried_host": host,
+            "posture_from": fallback or domain,
+            "spf": spf,
+            "spf_all": qualifier,
+            "spf_ok": spf_ok,
+            "spf_lookups": _spf_lookup_count(spf) if spf else 0,
+            "dmarc": dmarc,
+            "dmarc_policy": policy,
+            "dmarc_ok": dmarc_ok,
+            "dmarc_rua": rua,
+            "mx": [exchange for _pref, exchange in mx],
+            "accepts_mail": bool(mx),
+            "resolver_errors": errors,
+            "note": "DKIM needs a selector and was not probed.",
+        }
+
+        findings = [
+            finding(
+                ctx,
+                self.attack_id,
+                f"Mail posture read for {domain}",
+                Severity.INFO,
+                detail=(
+                    f"SPF {'present' if spf else 'absent'}, DMARC "
+                    f"{'present' if dmarc else 'absent'}, "
+                    f"{len(mx)} MX record(s)"
+                ),
+                evidence=evidence,
+            )
+        ]
+
+        if not mx and not spf:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "Domain does not accept mail and publishes no SPF",
+                    Severity.INFO,
+                    detail=(
+                        "No MX and no SPF: a forged sender at this domain is "
+                        "likely to bounce rather than be delivered, which lowers "
+                        "the severity of the absence."
+                    ),
+                    evidence=evidence,
+                )
+            )
+        elif not spf:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "No SPF record: any host may claim to send as this domain",
+                    Severity.MEDIUM,
+                    detail=(
+                        "Publish 'v=spf1 ... -all' so receivers can reject senders "
+                        "that are not yours."
+                    ),
+                    evidence=evidence,
+                )
+            )
+        elif qualifier == "+":
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "SPF ends in +all: every sender is authorised",
+                    Severity.HIGH,
+                    detail=f"'{spf[:120]}' authorises the whole internet to send as {domain}.",
+                    evidence=evidence,
+                )
+            )
+        elif qualifier == "?":
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "SPF ends in ?all: the result is neutral",
+                    Severity.MEDIUM,
+                    detail=(
+                        "'?all' tells receivers to decide for themselves, which in "
+                        "practice means spoofed mail is delivered. Use '-all'."
+                    ),
+                    evidence=evidence,
+                )
+            )
+        elif qualifier == "~":
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "SPF ends in ~all: soft-fail only",
+                    Severity.LOW,
+                    detail=(
+                        "'~all' marks unauthorised mail but usually still delivers "
+                        "it to the inbox. '-all' is the production setting."
+                    ),
+                    evidence=evidence,
+                )
+            )
+
+        if spf and _spf_lookup_count(spf) > 10:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "SPF exceeds the 10-lookup limit",
+                    Severity.LOW,
+                    detail=(
+                        f"{_spf_lookup_count(spf)} lookup mechanisms: receivers "
+                        "will return permerror and the policy stops protecting you."
+                    ),
+                    evidence=evidence,
+                )
+            )
+
+        if not dmarc:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "No DMARC record: nobody is told what to do with a forged sender",
+                    Severity.MEDIUM,
+                    detail=(
+                        "Publish _dmarc.<domain> with at least 'v=DMARC1; p=none; "
+                        "rua=mailto:...' so reports arrive before you enforce."
+                    ),
+                    evidence=evidence,
+                )
+            )
+        elif policy in ("none", ""):
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "DMARC is in monitor mode (p=none)",
+                    Severity.MEDIUM,
+                    detail=(
+                        "Reporting without enforcement: forged mail is still "
+                        "delivered. Move to p=quarantine, then p=reject."
+                    ),
+                    evidence=evidence,
+                )
+            )
+        elif policy == "quarantine":
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "DMARC quarantines forged mail",
+                    Severity.LOW,
+                    detail=(
+                        "p=quarantine is enforced but mail can still reach a "
+                        "spam folder; p=reject is stronger."
+                    ),
+                    evidence=evidence,
+                )
+            )
+
+        if dmarc and not rua:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "DMARC has no reporting address (rua)",
+                    Severity.INFO,
+                    detail="Without rua= you cannot see who is spoofing the domain.",
+                    evidence=evidence,
+                )
+            )
+
+        if errors:
+            findings.append(
+                finding(
+                    ctx,
+                    self.attack_id,
+                    "Some DNS queries did not complete",
+                    Severity.INFO,
+                    detail="; ".join(errors)[:300],
+                    evidence={"resolver_errors": errors},
+                    confidence="low",
+                )
+            )
+        return findings
+
+
 class HttpFingerprintModule(Module):
     attack_id = "recon.http_fingerprint"
 
@@ -151,8 +442,15 @@ class PortScanModule(Module):
         ports = ctx.ports or (80, 443)
         open_ports: list[int] = []
         banners: dict[int, str] = {}
-        for port in ports:
-            reachable, banner = ctx.tcp_probe(port)
+
+        # A filtered port costs the full timeout, so a serial sweep is only as
+        # fast as the slowest closed port times the list. The budget lock in
+        # ScanContext keeps the rate limit intact across these threads.
+        workers = max(1, min(8, len(ports)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(ctx.tcp_probe, ports))
+
+        for port, (reachable, banner) in zip(ports, results):
             if reachable:
                 open_ports.append(port)
                 if banner:

@@ -10,9 +10,58 @@ from collections.abc import Sequence
 from typing import Any
 
 from . import BANNER
+from .models import RISK_RANK, Risk
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
+
+
+def coverage(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """What was tested, what was skipped, and what this run never planned.
+
+    A scan cannot claim to have found everything. It can claim exactly which
+    techniques it ran and which it did not — that is what this table is for, and
+    why the reason column exists rather than a silent omission.
+    """
+    from . import catalog  # local: report is imported before the catalogue loads
+
+    target = payload.get("target") or {}
+    families = set(target.get("families") or [])
+    profile_name = str(payload.get("profile") or "safe")
+    profile = catalog.PROFILES.get(profile_name)
+    executions = {
+        entry.get("attack_id"): entry for entry in (payload.get("executions") or [])
+    }
+    planned = list(payload.get("planned") or [])
+
+    rows: list[dict[str, str]] = []
+    for spec in catalog.all_specs():
+        if not spec.implemented or spec.category in ("report", "analysis"):
+            continue
+        execution = executions.get(spec.id)
+        if execution is not None:
+            status = execution.get("status") or "unknown"
+            note = execution.get("reason") or execution.get("error") or ""
+            if status == "ok":
+                status = "tested"
+                count = execution.get("finding_count") or 0
+                note = f"{count} finding(s)" if count else "no findings"
+            rows.append({"attack_id": spec.id, "status": status, "detail": note})
+            continue
+        if not set(spec.families) & families:
+            detail = "not applicable to this target family"
+        elif RISK_RANK[spec.risk] > RISK_RANK[
+            profile.max_risk if profile else Risk.SAFE
+        ]:
+            detail = f"above the {profile_name} ceiling"
+        elif spec.external and profile is not None and not profile.include_external:
+            detail = "external tools are not enabled in this profile"
+        else:
+            detail = "not planned"
+        if spec.id in planned:
+            detail = "planned but not executed"
+        rows.append({"attack_id": spec.id, "status": "not tested", "detail": detail})
+    return rows
 
 _COLOR = True
 _UNICODE = True
@@ -281,6 +330,24 @@ def render_run_text(payload: dict[str, Any]) -> str:
         lines.append("")
         lines.extend(chain_lines(chains))
 
+    entries = coverage(payload)
+    untested = [item for item in entries if item["status"] != "tested"]
+    if entries:
+        lines.append("")
+        lines.append(bold("COVERAGE"))
+        lines.append(
+            f" {len(entries) - len(untested)} tested {dot()} "
+            f"{len(untested)} not tested {dim('(a reason is not a pass)')}"
+        )
+        groups: dict[str, list[str]] = {}
+        for item in untested:
+            groups.setdefault(item["detail"], []).append(item["attack_id"])
+        for detail, attack_ids in groups.items():
+            shown = ", ".join(attack_ids[:6])
+            if len(attack_ids) > 6:
+                shown += f", +{len(attack_ids) - 6} more"
+            lines.append(f"  {dim('-')} {detail}: {dim(shown)}")
+
     counts = severity_counts(findings)
     summary = (
         f" {dot()} ".join(
@@ -306,7 +373,6 @@ def render_run_text(payload: dict[str, Any]) -> str:
 # -- other formats -----------------------------------------------------------
 def render_markdown(payload: dict[str, Any]) -> str:
     target = payload.get("target") or {}
-    executions = payload.get("executions") or []
     findings = payload.get("findings") or []
     counts = severity_counts(findings)
 
@@ -380,13 +446,15 @@ def render_markdown(payload: dict[str, Any]) -> str:
 
     lines.append("## Coverage")
     lines.append("")
-    lines.append("| technique | result | time | note |")
-    lines.append("|---|---|---|---|")
-    for entry in executions:
-        note = entry.get("reason") or entry.get("error") or ""
+    lines.append("Every executable technique in the catalogue, with the reason it was")
+    lines.append("not run when it was not. An untested technique is not a clean result.")
+    lines.append("")
+    lines.append("| technique | result | reason |")
+    lines.append("|---|---|---|")
+    for entry in coverage(payload):
         lines.append(
-            f"| `{entry.get('attack_id')}` | {entry.get('status')} | "
-            f"{(entry.get('duration_ms') or 0) / 1000:.2f}s | {note[:120]} |"
+            f"| `{entry['attack_id']}` | {entry['status']} | "
+            f"{entry['detail'].replace('|', chr(92) + '|')[:140]} |"
         )
     lines.append("")
 
@@ -405,4 +473,6 @@ def render_markdown(payload: dict[str, Any]) -> str:
 
 
 def render_json(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+    enriched = dict(payload)
+    enriched.setdefault("coverage", coverage(payload))
+    return json.dumps(enriched, indent=2, ensure_ascii=False)

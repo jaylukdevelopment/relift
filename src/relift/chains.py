@@ -589,6 +589,120 @@ def _container_escape(findings: list[dict[str, Any]]) -> AttackChain | None:
     )
 
 
+def _cors_session_theft(findings: list[dict[str, Any]]) -> AttackChain | None:
+    """Reflected-origin CORS plus a session cookie script can read."""
+    cors = _first_with(findings, "web.cors_policy", ("exploitable",))
+    cookies = _first_with(findings, "web.cookie_flags", ("insecure_session",))
+    if cors is None or cookies is None:
+        return None
+    if not (cors.get("evidence") or {}).get("exploitable"):
+        return None
+    exposed = (cookies.get("evidence") or {}).get("insecure_session") or []
+    if not exposed:
+        return None
+
+    cors_evidence = cors.get("evidence") or {}
+    return AttackChain(
+        id="thread.cors-session-theft",
+        title="Any origin can read this session",
+        severity=Severity.HIGH,
+        summary=(
+            "The origin reflects an arbitrary Origin header while allowing "
+            "credentials, and the cookie that carries the session is not "
+            "protected from script or plaintext access. A logged-in user who "
+            "opens an attacker's page is enough; no password is involved."
+        ),
+        stages=[
+            ChainStep(
+                stage=STAGE_ACCESS,
+                attack_id="web.cors_policy",
+                title="Cross-origin read allowed for any origin",
+                detail=str(cors_evidence.get("acao") or "origin reflected"),
+            ),
+            ChainStep(
+                stage=STAGE_CREDENTIAL,
+                attack_id="web.cookie_flags",
+                title=f"{len(exposed)} session-looking cookie(s) under-protected",
+                detail=", ".join(str(name) for name in exposed[:5]),
+            ),
+            ChainStep(
+                stage=STAGE_COLLECTION,
+                attack_id="web.cors_policy",
+                title="Authenticated responses readable from a third-party page",
+                detail="the reflected policy applies to the origin's own responses",
+            ),
+        ],
+        break_at=(
+            "Replace the reflected Access-Control-Allow-Origin with a fixed "
+            "allowlist (and send Vary: Origin), then set HttpOnly, Secure and "
+            "SameSite=Lax on the session cookie. Either fix alone breaks the path."
+        ),
+        confidence="medium",
+    )
+
+
+def _mail_spoofing(findings: list[dict[str, Any]]) -> AttackChain | None:
+    """No enforced SPF/DMARC: the domain can be impersonated in mail."""
+    posture = _first_with(
+        findings, "recon.mail_posture", ("spf_all", "dmarc_policy")
+    )
+    if posture is None:
+        return None
+    evidence = posture.get("evidence") or {}
+    spf_ok = bool(evidence.get("spf_ok"))
+    dmarc_ok = bool(evidence.get("dmarc_ok"))
+    if spf_ok and dmarc_ok:
+        return None
+
+    accepts_mail = bool(evidence.get("accepts_mail"))
+    both_weak = not spf_ok and not dmarc_ok
+    if accepts_mail and both_weak:
+        severity = Severity.HIGH
+    elif accepts_mail:
+        severity = Severity.MEDIUM
+    else:
+        severity = Severity.LOW
+
+    domain = str(evidence.get("domain") or "this domain")
+    return AttackChain(
+        id="thread.mail-spoofing",
+        title="Sender impersonation of the domain",
+        severity=severity,
+        summary=(
+            f"{domain} does not tell receivers to reject forged senders: SPF "
+            f"{evidence.get('spf_all') or 'missing'}, DMARC "
+            f"{evidence.get('dmarc_policy') or 'missing'}. The path is a mail "
+            "from a trusted name, not a request to this host."
+        ),
+        stages=[
+            ChainStep(
+                stage=STAGE_RECON,
+                attack_id="recon.mail_posture",
+                title="Mail policy is published but not enforced",
+                detail=(
+                    f"SPF all={evidence.get('spf_all') or 'missing'}, "
+                    f"DMARC p={evidence.get('dmarc_policy') or 'missing'}"
+                ),
+            ),
+            ChainStep(
+                stage=STAGE_ACCESS,
+                attack_id="recon.mail_posture",
+                title="A forged sender passes receiver checks",
+                detail=(
+                    "the assessment stops at this stage: it proves delivery "
+                    "policy, not that a message was sent"
+                ),
+            ),
+        ],
+        break_at=(
+            "Publish 'v=spf1 ... -all', run DMARC at p=none with a rua= "
+            "reporting address for a month, then move to p=reject. DKIM signing "
+            "prevents legitimate mail from breaking when you do."
+        ),
+        confidence="medium",
+    )
+
+
 RULES: tuple[Rule, ...] = (
     Rule("thread.datastore-no-auth", "Unauthenticated datastore", _open_datastore),
     Rule("thread.web-to-datastore", "Application to datastore", _web_to_database),
@@ -600,6 +714,8 @@ RULES: tuple[Rule, ...] = (
     Rule("thread.writable-admin-surface", "Writable admin surface", _writable_admin_surface),
     Rule("thread.certificate-mitm", "Certificate trust", _certificate_mitm),
     Rule("thread.local-privilege-escalation", "Local escalation", _local_escalation),
+    Rule("thread.cors-session-theft", "CORS session theft", _cors_session_theft),
+    Rule("thread.mail-spoofing", "Mail spoofing", _mail_spoofing),
 )
 
 

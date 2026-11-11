@@ -1,21 +1,31 @@
-"""Command line surface: list, providers, init-scope, plan, scan, report."""
+"""Command line surface: list, explain, doctor, providers, scope, plan, scan,
+attack, chains, report, desktop."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import platform
+import socket
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import BANNER, __version__, catalog
 from . import chains as chain_engine
-from .ai import Analyst, build_provider, provider_report
-from .audit import AuditLog, find_run, load_run, write_run
+from .ai import Analyst, build_provider, provider_report, selected_provider_label
+from .audit import (
+    AuditLog,
+    default_audit_path,
+    find_run,
+    load_run,
+    runs_root,
+    write_run,
+)
 from .config import ai_settings, load_config, scan_settings
 from .models import Risk, Target
-from .modules import ScanContext
+from .modules import MODULES, ScanContext, tool_path
 from .report import (
     bold,
     chain_lines,
@@ -32,7 +42,13 @@ from .report import (
     yellow,
 )
 from .runner import execute, make_plan
-from .scope import ScopeError, build_scope_document, load_scope, resolve_host
+from .scope import (
+    ScopeError,
+    build_scope_document,
+    load_scope,
+    offline_scope,
+    resolve_host,
+)
 
 
 def _err(message: str) -> None:
@@ -66,6 +82,38 @@ def _parse_ports(text: str) -> tuple[int, ...]:
     if not ports:
         raise ValueError("no ports given")
     return tuple(sorted(set(ports)))
+
+
+def _add_target_argument(parser: argparse.ArgumentParser) -> None:
+    """Accept the target positionally or as --target, because both are typed.
+
+    ``relift attack pixelcity.dev`` is what people reach for first; the flag
+    stays for scripts written against 0.2 and for tab completion.
+    """
+    parser.add_argument(
+        "target",
+        nargs="?",
+        metavar="TARGET",
+        help="host, URL or database URI (same as --target)",
+    )
+    parser.add_argument(
+        "--target",
+        dest="target_option",
+        metavar="TARGET",
+        help="the target, if you prefer it as a flag",
+    )
+
+
+def _resolve_target(args: argparse.Namespace) -> str:
+    value = str(
+        getattr(args, "target_option", None) or getattr(args, "target", None) or ""
+    ).strip()
+    if not value:
+        raise ValueError(
+            "a target is required — try 'relift attack <target>' "
+            "(or --target <target>)"
+        )
+    return value
 
 
 def _load_credentials(path: str, target: Target) -> list[dict]:
@@ -216,7 +264,7 @@ def _author_attack_scope(
     if expires is None:
         expires = datetime.now(timezone.utc) + timedelta(hours=24)
 
-    ports = _parse_ports(args.ports) if args.ports else (22, 80, 443, 8000, 8080, 8443)
+    ports = _attack_scope_ports(args, target)
     document = build_scope_document(
         engagement=f"attack {target.host}",
         # The name and every address it resolves to right now: a name is only
@@ -241,6 +289,20 @@ def _author_attack_scope(
     return path
 
 
+def _attack_scope_ports(args: argparse.Namespace, target: Target) -> tuple[int, ...]:
+    """Ports an authored attack scope sweeps.
+
+    The target's own port is always included: `attack host:8099` that never
+    probes 8099 would be a scope bug, not a sensible default.
+    """
+    if getattr(args, "ports", None):
+        return _parse_ports(args.ports)
+    base = {22, 80, 443, 8000, 8080, 8443}
+    if target.port:
+        base.add(int(target.port))
+    return tuple(sorted(base))
+
+
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -249,7 +311,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="relift",
         description="Pixelcity red-team orchestrator for authorized infrastructure testing.",
-        epilog="Every technique is listed by 'relift list'. Nothing runs "
+        epilog="examples:\n"
+               "  relift attack pixelcity.dev            scope + run, safe tier\n"
+               "  relift attack pixelcity.dev --dry-run  plan only, nothing sent\n"
+               "  relift scan https://host --scope s.json --execute\n"
+               "  relift list --search cors             find a technique\n"
+               "Every technique is listed by 'relift list'. Nothing runs "
                "without a scope file.",
     )
     parser.add_argument(
@@ -266,7 +333,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--category", help=" | ".join(catalog.categories())
     )
     p_list.add_argument("--implemented-only", action="store_true")
+    p_list.add_argument(
+        "--search",
+        metavar="TEXT",
+        help="only entries whose id, name or summary contains TEXT",
+    )
     p_list.add_argument("--json", action="store_true")
+
+    p_explain = sub.add_parser(
+        "explain", help="describe one technique in full"
+    )
+    p_explain.add_argument("attack_id", metavar="ID", help="e.g. web.cors_policy")
+    p_explain.add_argument("--json", action="store_true")
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="check this machine's setup before the first run",
+        description="Read-only environment check: paths, external tools, AI "
+        "provider and — when a target is given — whether the name resolves. "
+        "Sends no traffic to the target.",
+    )
+    p_doctor.add_argument(
+        "target", nargs="?", metavar="TARGET", help="also check that this resolves"
+    )
+    p_doctor.add_argument("--json", action="store_true")
 
     p_prov = sub.add_parser("providers", help="show AI providers and readiness")
     p_prov.add_argument("--json", action="store_true")
@@ -300,13 +390,17 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         parser.add_argument(
             "--sqli-url",
+            "--param-url",
+            dest="sqli_url",
             metavar="URL",
-            help="URL with a parameter to test for injection (intrusive tier)",
+            help="URL with the parameter to probe (injection, traversal, redirect)",
         )
         parser.add_argument(
             "--sqli-param",
+            "--param",
+            dest="sqli_param",
             metavar="NAME",
-            help="which query parameter --sqli-url should be probed on",
+            help="which query parameter the parameter techniques should probe on",
         )
 
     for name, text in (
@@ -314,7 +408,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ("scan", "run the plan (dry-run unless --execute)"),
     ):
         sub_parser = sub.add_parser(name, help=text)
-        sub_parser.add_argument("--target", required=True)
+        _add_target_argument(sub_parser)
         sub_parser.add_argument("--scope", required=True)
         sub_parser.add_argument("--profile", choices=list(catalog.PROFILES))
         _add_analyst_flags(sub_parser)
@@ -325,17 +419,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_attack = sub.add_parser(
         "attack",
         help="one command: authorise the target, plan and run it",
-        description="Author a one-target, 24-hour engagement for --target, then "
+        description="Author a one-target, 24-hour engagement for the target, then "
         "run it. --depth picks how far the run goes: 1 passive, 2 safe, "
         "3 standard (external tools), 4 intrusive, 5 full. Every run still "
         "writes a scope file and an audit record.",
     )
-    p_attack.add_argument("--target", required=True)
+    _add_target_argument(p_attack)
     p_attack.add_argument(
         "--depth",
         default="2",
         metavar="N",
         help="1-5 or passive|safe|standard|intrusive|full (default: 2, safe)",
+    )
+    p_attack.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="authorise and plan, then stop without sending a request",
     )
     p_attack.add_argument(
         "--scope",
@@ -347,6 +446,28 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_analyst_flags(p_attack)
     p_attack.add_argument("--json", action="store_true")
     _execution_flags(p_attack, execute=False)
+
+    p_code = sub.add_parser(
+        "code",
+        help="audit a local codebase",
+        description="Audit a directory: hardcoded secrets, dangerous sinks and "
+        "dependency advisories. Reads local files only; the single outbound "
+        "request is the OSV advisory lookup, disabled with --no-osv.",
+    )
+    p_code.add_argument("path", metavar="PATH", help="directory to audit")
+    p_code.add_argument(
+        "--profile",
+        choices=list(catalog.PROFILES),
+        default="safe",
+        help="ceiling for the run (default: safe; code techniques are passive)",
+    )
+    p_code.add_argument(
+        "--no-osv",
+        action="store_true",
+        help="skip the OSV advisory lookup and inventory versions only",
+    )
+    _add_analyst_flags(p_code)
+    p_code.add_argument("--json", action="store_true")
 
     p_report = sub.add_parser("report", help="render a stored run")
     p_report.add_argument("--run", help="run id, or a path to run.json (default: latest)")
@@ -380,6 +501,18 @@ def _cmd_list(args: argparse.Namespace) -> int:
         specs = [spec for spec in specs if spec.category == wanted]
     if args.implemented_only:
         specs = [spec for spec in specs if spec.implemented]
+    if getattr(args, "search", None):
+        needle = str(args.search).strip().lower()
+        specs = [
+            spec
+            for spec in specs
+            if needle in spec.id.lower()
+            or needle in spec.name.lower()
+            or needle in spec.summary.lower()
+        ]
+        if not specs:
+            _err(yellow(f"no technique matches {args.search!r}"))
+            return 3
 
     if args.json:
         print(json.dumps([spec.to_dict() for spec in specs], indent=2))
@@ -444,6 +577,183 @@ def _cmd_providers(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _cmd_explain(args: argparse.Namespace) -> int:
+    try:
+        spec = catalog.spec(args.attack_id)
+    except KeyError as exc:
+        _err(red(str(exc)))
+        _err(dim(f"try: relift list --search {args.attack_id}"))
+        return 3
+
+    profiles = [
+        name
+        for name in catalog.PROFILES
+        if any(item.id == spec.id for item in catalog.select(name))
+    ]
+    module = MODULES.get(spec.id)
+    payload = dict(spec.to_dict())
+    payload["module"] = type(module).__name__ if module else ""
+    payload["profiles"] = profiles
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    tier = spec.risk.value
+    tier_text = red(tier) if tier in ("intrusive", "destructive") else tier
+    print(bold(BANNER))
+    print()
+    print(f"{cyan(spec.id)}   {bold(spec.name)}")
+    print()
+    fields = [
+        ("category", spec.category),
+        ("tier", tier_text),
+        ("status", spec.status),
+        ("families", ", ".join(spec.families)),
+        ("produces", ", ".join(spec.produces) or "-"),
+        ("profiles", ", ".join(profiles) or "none"),
+        ("module", type(module).__name__ if module else "-"),
+        ("MITRE", spec.mitre or "-"),
+    ]
+    width = max(len(name) for name, _ in fields)
+    for name, value in fields:
+        print(f"  {dim(name.ljust(width))}  {value}")
+    print()
+    print(f"  {bold('what it does')}  {spec.summary}")
+    if spec.ai_hint:
+        print(f"  {bold('why it matters')} {spec.ai_hint}")
+    if spec.notes:
+        print(f"  {bold('notes')}         {spec.notes}")
+    print()
+    return 0
+
+
+def _nearest_existing(path: Path) -> Path | None:
+    """The closest ancestor that exists, so mkdir -p semantics are checked."""
+    candidate = path
+    while True:
+        if candidate.exists():
+            return candidate
+        if candidate.parent == candidate:
+            return None
+        candidate = candidate.parent
+
+
+def _dir_report(label: str, path: Path) -> tuple[str, str, str]:
+    if path.exists():
+        writable = os.access(path, os.W_OK)
+        return (
+            "ok" if writable else "fail",
+            label,
+            f"{path} ({'writable' if writable else 'not writable'})",
+        )
+    ancestor = _nearest_existing(path)
+    if ancestor is not None and os.access(ancestor, os.W_OK):
+        return "warn", label, f"{path} (will be created on the first run)"
+    return "fail", label, f"{path} (no writable ancestor: {ancestor})"
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Environment check. Reads paths and lookups only; never touches a target."""
+    config = load_config(getattr(args, "config", None))
+    checks: list[tuple[str, str, str]] = []
+
+    version_ok = sys.version_info >= (3, 9)
+    checks.append(
+        (
+            "ok" if version_ok else "fail",
+            "python",
+            f"{platform.python_version()} (needs 3.9+)",
+        )
+    )
+    checks.append(("ok", "relift", f"{__version__} on {platform.platform()}"))
+    checks.append(
+        ("ok", "config", str(config.get("_source") or "built-in defaults"))
+    )
+
+    scope_dir = Path(
+        os.environ.get("RELIFT_SCOPE_DIR")
+        or (Path.home() / ".relift" / "scopes")
+    ).expanduser()
+    checks.append(_dir_report("scope dir", scope_dir))
+    checks.append(_dir_report("run dir", runs_root()))
+    audit_path = default_audit_path()
+    checks.append(_dir_report("audit log", audit_path))
+
+    external = ("nmap", "nuclei", "nikto", "sslscan")
+    found = {name: tool_path(name) for name in external}
+    missing = [name for name, path in found.items() if not path]
+    tools_text = ", ".join(
+        name if path else f"{name} (missing)" for name, path in found.items()
+    )
+    checks.append(("warn" if missing else "ok", "external tools", tools_text))
+
+    provider = selected_provider_label(ai_settings(config))
+    checks.append(
+        (
+            "ok" if provider != "offline" else "warn",
+            "ai analyst",
+            provider
+            + ("" if provider != "offline" else " (deterministic rule engine)"),
+        )
+    )
+
+    if getattr(args, "target", None):
+        host = Target.parse(args.target).host
+        try:
+            addresses = sorted(
+                {info[4][0] for info in socket.getaddrinfo(host, None)}
+            )
+        except OSError as exc:
+            checks.append(("fail", "target", f"{host} does not resolve: {exc}"))
+        else:
+            checks.append(("ok", "target", f"{host} -> {', '.join(addresses)}"))
+
+    failures = sum(1 for level, _, _ in checks if level == "fail")
+    warnings = sum(1 for level, _, _ in checks if level == "warn")
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "ok": failures == 0,
+                    "failures": failures,
+                    "warnings": warnings,
+                    "checks": [
+                        {"level": level, "check": name, "detail": detail}
+                        for level, name, detail in checks
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return 1 if failures else 0
+
+    palette = {"ok": green, "warn": yellow, "fail": red}
+    rows = [
+        [palette[level](level), name, detail]
+        for level, name, detail in checks
+    ]
+    print(bold(BANNER))
+    print()
+    print(table(rows, ["STATUS", "CHECK", "DETAIL"]))
+    print()
+    verdict = (
+        red(f"{failures} check(s) failed")
+        if failures
+        else green("ready")
+        + (
+            dim(f" — {warnings} warning(s), nothing blocking")
+            if warnings
+            else ""
+        )
+    )
+    print(verdict)
+    if not failures:
+        print(dim("next: relift attack <target>   ·   relift list --search cors"))
+    return 1 if failures else 0
 
 
 def _cmd_init_scope(args: argparse.Namespace) -> int:
@@ -543,7 +853,64 @@ def _prepare(args: argparse.Namespace):
     return target, scope, matched, analyst, audit, profile, config
 
 
+def _cmd_code(args: argparse.Namespace) -> int:
+    root = Path(args.path).expanduser()
+    if not root.exists():
+        raise ValueError(f"no such path: {root}")
+    if not root.is_dir():
+        raise ValueError(f"{root} is a file; point 'relift code' at a directory")
+    root = root.resolve()
+
+    config = load_config(getattr(args, "config", None))
+    settings = ai_settings(config)
+    target = Target(
+        raw=f"code://{root}", scheme="code", host="local", port=0, path=str(root)
+    )
+    scope = offline_scope(root)
+    provider_name = "none" if args.no_ai else (args.ai or "")
+    analyst = Analyst(build_provider(provider_name or None, settings))
+    audit = AuditLog()
+    audit.event(
+        "codebase",
+        path=str(root),
+        profile=args.profile,
+        analyst=analyst.label,
+        note="local files only; no host is authorised or contacted",
+    )
+
+    plan = make_plan(target, scope, args.profile, analyst)
+    ctx = ScanContext(
+        target=target,
+        scope=scope,
+        ports=(),
+        dry_run=False,
+        audit=audit,
+        osv=not args.no_osv,
+    )
+
+    print(bold(BANNER))
+    print()
+    print(f"  codebase  {cyan(str(root))}")
+    print(f"  profile   {args.profile} · {len(plan.specs)} technique(s)")
+    print()
+
+    record = execute(plan, ctx, audit)
+    path = write_run(record)
+    payload = record.to_dict()
+
+    print(render_run_text(payload))
+    print()
+    print(dim(f"run saved to {path}   audit: {audit.path}"))
+    if audit.error:
+        _err(yellow(f"audit log problem: {audit.error}"))
+    if args.json:
+        print()
+        print(render_json(payload))
+    return 1 if any(entry.status == "error" for entry in record.executions) else 0
+
+
 def _cmd_plan(args: argparse.Namespace) -> int:
+    args.target = _resolve_target(args)
     target, scope, matched, analyst, audit, profile, _ = _prepare(args)
     plan = make_plan(target, scope, profile, analyst)
 
@@ -557,6 +924,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
+    args.target = _resolve_target(args)
     target, scope, matched, analyst, audit, profile, _ = _prepare(args)
     plan = make_plan(
         target,
@@ -591,10 +959,13 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     if not args.execute:
         print(render_plan_text(plan, scope=scope, matched=matched))
         print()
-        print(
-            yellow("dry run: nothing was sent. ") + "add "
-            + bold("--execute") + " to run it."
+        # 'attack' has no --execute: its hint is to drop --dry-run.
+        hint = (
+            "re-run the same command without " + bold("--dry-run") + "."
+            if getattr(args, "command", "") == "attack"
+            else "add " + bold("--execute") + " to run it."
         )
+        print(yellow("dry run: nothing was sent. ") + hint)
         return 0
 
     print(dim(f"running {len(plan.specs)} technique(s) against {target.origin} ..."))
@@ -618,6 +989,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 def _cmd_attack(args: argparse.Namespace) -> int:
     depth, profile, ceiling, intrusive, external = _parse_depth(args.depth)
+    args.target = _resolve_target(args)
     target = Target.parse(args.target)
 
     if args.scope:
@@ -655,7 +1027,7 @@ def _cmd_attack(args: argparse.Namespace) -> int:
     args.scope = str(scope_path)
     args.profile = profile
     args.include_external = external
-    args.execute = True
+    args.execute = not getattr(args, "dry_run", False)
     return _cmd_scan(args)
 
 
@@ -745,6 +1117,10 @@ def _cmd_desktop(args: argparse.Namespace) -> int:
 def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.command == "list":
         return _cmd_list(args)
+    if args.command == "explain":
+        return _cmd_explain(args)
+    if args.command == "doctor":
+        return _cmd_doctor(args)
     if args.command == "providers":
         return _cmd_providers(args)
     if args.command == "init-scope":
@@ -755,6 +1131,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return _cmd_scan(args)
     if args.command == "attack":
         return _cmd_attack(args)
+    if args.command == "code":
+        return _cmd_code(args)
     if args.command == "report":
         return _cmd_report(args)
     if args.command == "chains":
@@ -773,6 +1151,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if not getattr(args, "command", None):
         print(bold(BANNER))
+        print()
+        print(bold("quick start"))
+        for line in (
+            ("relift doctor", "check this machine's setup"),
+            ("relift list", "every technique, tier and status"),
+            ("relift explain web.cors_policy", "one technique in full"),
+            ("relift attack <target>", "authorise, plan and run (safe, no traffic first)"),
+            ("relift attack <target> --depth 3", "add external tools when installed"),
+            ("relift code .", "audit a local codebase for secrets and CVEs"),
+            ("relift chains", "the attack threads from the last run"),
+        ):
+            print(f"  {cyan(line[0].ljust(38))} {dim(line[1])}")
+        print()
         parser.print_help()
         return 0
 

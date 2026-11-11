@@ -89,3 +89,50 @@ def test_kernel_cve_entries_are_advisory_strings(scan_ctx):
     for entry in summary.evidence["kernel_cves"]:
         assert entry.startswith("CVE-")
         assert "fixed in" in entry
+
+
+def test_merged_usr_binary_is_counted_once(tmp_path, monkeypatch):
+    """On a usrmerge host /bin/x and /usr/bin/x are the same file."""
+    import os
+
+    from relift.modules import system
+
+    real = tmp_path / "usr-bin"
+    real.mkdir()
+    binary = real / "helper"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    os.chmod(binary, 0o4755)
+    link = tmp_path / "bin"
+    link.symlink_to(real)
+
+    monkeypatch.setattr(system, "SCAN_DIRS", (str(real), str(link)))
+    suid, sgid, _caps = system._suid_surface()
+
+    assert suid == [str(binary)]
+    assert sgid == []
+
+
+def test_a_passworded_sudo_rule_is_not_called_passwordless(scan_ctx, monkeypatch):
+    from relift.modules import system
+
+    monkeypatch.setattr(system, "_sudo_rules", lambda: ["%sudo\tALL=(ALL:ALL) ALL"])
+    titles = [item.title for item in HostAuditModule().run(scan_ctx("local://"))]
+
+    assert any("unrestricted rights" in title for title in titles)
+    assert not any("without a password" in title for title in titles)
+
+
+def test_a_nopasswd_rule_is_reported_as_such(scan_ctx, monkeypatch):
+    from relift.modules import system
+
+    monkeypatch.setattr(
+        system,
+        "_sudo_rules",
+        lambda: ["root\tALL=(ALL:ALL) ALL", "deploy\tALL=(ALL) NOPASSWD:ALL"],
+    )
+    findings = HostAuditModule().run(scan_ctx("local://"))
+    passwordless = [item for item in findings if "without a password" in item.title]
+
+    assert passwordless, [item.title for item in findings]
+    assert passwordless[0].evidence["rules"] == ["deploy\tALL=(ALL) NOPASSWD:ALL"]
+    assert passwordless[0].severity is not None

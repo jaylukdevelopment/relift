@@ -46,7 +46,7 @@ launcher and injected into its own frameless window, so it is never a route.
 The HTML is served with a small script injected immediately before `</head>`:
 
 ```html
-<script>window.RELIFT_BOOT={token:"…",version:"0.2.0"};</script>
+<script>window.RELIFT_BOOT={token:"…",version:"0.4.0"};</script>
 ```
 
 `app.js` reads `window.RELIFT_BOOT.token` and sends it on every call.

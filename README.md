@@ -12,7 +12,7 @@ A [Pixelcity](https://pixelcity.dev) tool. Built and maintained by **Jay**.
 ![Relift desktop: findings view of a completed run](docs/img/desktop-findings.png)
 
 ```
-relift  ::  Pixelcity Red Team Orchestrator  ::  v0.2.0
+relift  ::  Pixelcity Red Team Orchestrator  ::  v0.4.0
 ```
 
 ---
@@ -52,15 +52,28 @@ at anything, and never at a host you do not control.
 
 ## Highlights
 
-- **24-entry attack catalogue** with risk tiers, MITRE mapping and implementation status.
+- **32-entry attack catalogue** with risk tiers, MITRE mapping and implementation status.
 - **`relift list`** prints the whole catalogue — every technique, what it touches,
-  and whether it is implemented or design-only.
+  and whether it is implemented or design-only. `relift explain <id>` has the rest,
+  and `relift doctor` checks the machine before the first run.
 - **Scope gate**: nothing runs unless the target matches an explicit, expiring,
   signed-off allowlist (`scope.json`). Deny rules always win.
 - **Dry-run by default**: `scan` prints the plan; `--execute` is a separate, deliberate flag.
 - **Real network operations**, not simulations: DNS resolution, TCP connect scan,
-  TLS handshake probing, certificate parsing, HTTP header/method analysis, SSH
-  KEXINIT parsing.
+  TLS handshake probing, certificate parsing, HTTP header/method analysis, CORS and
+  cookie-flag auditing, SPF/DMARC posture, SSH KEXINIT parsing.
+- **Bounded exploitation, not just detection**: a positive SQL injection is proved
+  by making the engine return its own version, path traversal by finding a
+  `/etc/passwd` marker, open redirect by a header pointing at a reserved host. It
+  proves impact; it never dumps a table, a file or a row.
+- **Codebase audit**: `relift code PATH` finds hardcoded secrets (redacted),
+  dangerous sinks, and pinned dependencies with real CVEs from OSV, including the
+  fixed version.
+- **Coverage report**: every run ends with what was tested, what was skipped and
+  why. A short report can no longer be mistaken for a clean one.
+- **TLS cipher acceptance without `sslscan`**: one pinned TLS 1.2 handshake per
+  legacy suite (RC4, 3DES, NULL, export, AES-CBC) and the suite the default
+  handshake negotiates.
 - **Real database protocols**, spoken directly: PostgreSQL startup and SCRAM, MySQL
   handshake, TDS pre-login, Redis RESP, MongoDB OP_MSG, Elasticsearch/CouchDB HTTP.
   No drivers, and no login unless you supply a credential.
@@ -69,7 +82,8 @@ at anything, and never at a host you do not control.
 - **Local host audit**: SUID/SGID, capabilities, sudo rules, container sockets,
   listening ports, kernel advisory pass — read-only.
 - **External tool wrappers** for `nmap`, `nuclei`, `nikto` when installed — fixed
-  argument templates, no shell interpolation.
+  argument templates, no shell interpolation. The stdlib techniques do not need
+  them, so a fresh machine still produces a real assessment.
 - **8 AI providers + offline**: Ollama, LM Studio, llama.cpp and any OpenAI-compatible
   gateway (local, no data leaves the box), OpenAI, Anthropic, OpenRouter and Groq
   (cloud), plus a deterministic rule engine.
@@ -84,7 +98,7 @@ The one-line Linux install (checksum-verified, no Python needed):
 
 ```bash
 curl -fsSL https://pixelcity.dev/lab/relift/install.sh | sh
-relift attack --target https://lab.example.com --depth 2
+relift attack lab.example.com --depth 2      # or: relift attack https://lab.example.com
 ```
 
 From source, with nothing outside the standard library at runtime:
@@ -103,6 +117,9 @@ relift attack --target https://lab.example.com --depth 2
 
 # 4. Read the threads
 relift chains
+
+# 5. Or audit a codebase instead of a host: secrets, sinks, CVEs
+relift code .
 ```
 
 `--depth` is how far the run goes: `1` passive, `2` safe (default), `3` standard
@@ -194,10 +211,12 @@ evidence behind it is never invented.
          internal interface. Fix order: bind address first, then auth.
 ```
 
-Ten rules ship: unauthenticated datastore, application-to-datastore (injectable
+Twelve rules ship: unauthenticated datastore, application-to-datastore (injectable
 parameter plus a reachable database), held credential, container socket, cleartext
 datastore auth, end-of-life datastore, plaintext session, writable admin surface,
-certificate trust, and local privilege escalation.
+certificate trust, local privilege escalation, CORS session theft (a reflected
+origin with credentials plus an under-protected session cookie) and mail spoofing
+(no enforced SPF/DMARC on a domain that accepts mail).
 
 ```bash
 relift chains                              # latest run, text
@@ -244,7 +263,7 @@ Every `v*` tag publishes prebuilt assets to
 | `relift-desktop-windows-x64.exe` | Windows 10/11 x64, desktop window | no |
 | `relift-desktop-linux-x64` | Linux x86_64, desktop window | no |
 | `relift.pyz` | any OS | 3.9+ |
-| `relift-0.2.0-py3-none-any.whl` | any OS | 3.9+ |
+| `relift-0.4.0-py3-none-any.whl` | any OS | 3.9+ |
 
 Each executable ships with a `.sha256` sidecar; verify before running:
 
@@ -269,23 +288,32 @@ the `.pyz` instead. Nothing in any build phones home.
 ## Commands
 
 ```
-relift list        [--category C] [--implemented-only] [--json]   Catalogue dump
+relift doctor      [TARGET] [--json]                             Check this machine
+relift list        [--category C] [--search TEXT] [--json]        Catalogue dump
+relift explain     ID [--json]                                   One technique, in full
 relift providers   [--json]                                      AI provider matrix
-relift attack      --target T [--depth 1-5]                      One command: scope + run
+relift attack      TARGET [--depth 1-5] [--dry-run]               One command: scope + run
+relift code        PATH [--no-osv]                                Audit a directory
 relift init-scope  --engagement NAME --host H [--host H ...]      Write a scope file
-relift plan        --target T [--profile P]                      Ordered run plan
-relift scan        --target T --scope S [--execute]              Run it
-relift chains      [--run ID] [--format text|json]                Attack threads
-relift report      --run RUN_ID [--format md|json|text]          Render a run
+relift plan        TARGET --scope S [--profile P]                Ordered run plan
+relift scan        TARGET --scope S [--execute]                  Run it
+relift chains      [--run ID] [--format text|json]               Attack threads
+relift report      [--run RUN_ID] [--format md|json|text]        Render a run
 relift desktop     [--port N] [--no-window]                      Desktop application
 ```
 
+`plan`, `scan` and `attack` take the target positionally or as `--target`.
+`relift attack <target> --dry-run` authors the scope and prints the plan without
+sending a request.
+
 Profiles: `passive`, `safe` (default), `standard`, `lab`. Database credentials
-(`--db-creds`) and injection probes (`--sqli-url` / `--sqli-param`) are intrusive
-and only run under `--profile lab` with an intrusive scope.
+(`--db-creds`) and parameter probes (`--sqli-url` / `--sqli-param`) are intrusive
+and only run under `--profile lab` with an intrusive scope. One parameter point
+feeds the injection, traversal and redirect proofs; `relift code PATH` takes a
+directory instead of a host and needs no scope file.
 
 Targets: any `http(s)://` origin, a database scheme from the table above,
-`ssh://host:22`, or `local://` for the host audit.
+`ssh://host:22`, `local://` for the host audit, or a directory for `code`.
 
 ## AI providers
 
@@ -332,7 +360,7 @@ Also: [`docs/README.md`](docs/README.md) (index and reading order),
 
 ## Status
 
-`v0.2.0` — public and **source-available**, not open source. The repository is
+`v0.4.0` — public and **source-available**, not open source. The repository is
 readable and issues are open, while the [licence](LICENSE) stays all rights
 reserved until the authorisation model and the catalogue have been hardened. The
 intent is to relicense once that bar is met; until then, running it against your

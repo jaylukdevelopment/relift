@@ -36,20 +36,28 @@ never gets the database probes. Elasticsearch and CouchDB are both `http` and
 | `recon.port_scan` | TCP connect sweep | recon | safe | ✅ implemented | — |
 | `recon.service_scan` | Service/version detection | recon | safe | ✅ external | `nmap` |
 | `recon.passive_subdomains` | Passive subdomain inventory | recon | passive | 🧩 design-only | — |
+| `recon.mail_posture` | Mail posture (SPF / DMARC / MX) | recon | passive | ✅ implemented | — |
 | `tls.certificate` | Certificate inspection | tls | passive | ✅ implemented | — |
 | `tls.protocol_support` | TLS version support probe | tls | safe | ✅ implemented | — |
-| `tls.cipher_preference` | Cipher suite preference | tls | safe | 🧩 design-only | `sslscan` |
+| `tls.cipher_preference` | Cipher suite audit | tls | safe | ✅ implemented | — |
 | `web.headers` | Security header audit | web | passive | ✅ implemented | — |
+| `web.cors_policy` | CORS policy audit | web | passive | ✅ implemented | — |
+| `web.cookie_flags` | Cookie flag audit | web | passive | ✅ implemented | — |
 | `web.methods` | HTTP method exposure | web | safe | ✅ implemented | — |
 | `web.content_disclosure` | robots.txt / sitemap disclosure | web | passive | ✅ implemented | — |
 | `web.template_scan` | Template scan, safe severities only | web | safe | ✅ external | `nuclei` |
 | `web.server_audit` | Server misconfiguration audit | web | intrusive | ✅ external | `nikto` |
-| `web.sql_injection_check` | Bounded SQL injection detection | web | intrusive | ✅ implemented | — |
-| `web.dir_bruteforce` | Directory brute-force | web | intrusive | 🧩 design-only | — |
+| `web.sql_injection_check` | SQL injection, detected then proved | web | intrusive | ✅ implemented | — |
+| `web.path_traversal` | Path traversal, proved by file marker | web | intrusive | ✅ implemented | — |
+| `web.open_redirect` | Open redirect confirmation | web | intrusive | ✅ implemented | — |
+| `web.dir_bruteforce` | Well-known path probe (bounded) | web | intrusive | ✅ implemented | — |
 | `db.fingerprint` | Database protocol fingerprint | db | safe | ✅ implemented | — |
 | `db.security_config` | Database security configuration audit | db | safe | ✅ implemented | — |
 | `db.credential_verify` | Held-credential verification | db | intrusive | ✅ implemented | — |
 | `system.host_audit` | Local privilege-escalation surface | system | safe | ✅ implemented | — |
+| `code.secrets` | Hardcoded secret scan (redacted) | code | passive | ✅ implemented | — |
+| `code.dangerous_sinks` | Dangerous code pattern scan | code | passive | ✅ implemented | — |
+| `code.dependencies` | Dependency advisories via OSV | code | passive | ✅ implemented | internet |
 | `analysis.attack_chains` | Attack-thread correlation | analysis | passive | ✅ implemented | — |
 | `auth.ssh_algorithms` | SSH algorithm audit | auth | safe | ✅ implemented | — |
 | `auth.password_policy` | Authentication policy probing | auth | intrusive | 🧩 design-only | — |
@@ -60,7 +68,7 @@ never gets the database probes. Elasticsearch and CouchDB are both `http` and
 when the binary is absent · 🧩 design-only = spec written, module deliberately absent
 · ⛔ never shipped = permanently excluded, see below.
 
-`24 techniques · 16 ready · 3 external · 5 design-only / excluded`
+`32 techniques · 26 ready · 3 external · 3 design-only / excluded`
 
 Two entries never appear in a plan by design: `analysis.attack_chains` runs after
 the modules have produced findings, and `report.narrative` is written when a
@@ -101,6 +109,21 @@ Intended source: certificate transparency logs, read-only. No DNS brute-force, e
 brute-forcing names against a third party's authoritative server is the single
 easiest way to become someone else's incident.
 
+### `recon.mail_posture` — passive
+Every other module asks what a host serves. This one asks whether anyone can send
+mail *as* the domain, which never appears in a port scan.
+
+Two to four resolver queries (TXT for `v=spf1`, TXT for `_dmarc.<domain>`, MX), and
+none of them against the target. It grades the `all` mechanism (`-all` is a pass;
+`~all` a soft-fail, `?all` neutral, `+all` authorises the whole internet), counts
+SPF lookup mechanisms against the 10-lookup limit, and grades the DMARC policy
+(`p=none` monitors without enforcing). A `https://www.` target reads the posture
+from the parent name rather than reporting a false absence.
+
+DKIM needs a selector and is not probed; the evidence says so. Read-only, no
+`socket` connection to the target, and a name that does not resolve produces one
+`info` finding.
+
 ---
 
 ## tls
@@ -115,10 +138,17 @@ Attempts handshakes pinned to TLS 1.2 and TLS 1.3 and reports which negotiate. A
 server accepting only 1.2 is a finding; a server accepting nothing fails the parse
 outright on modern OpenSSL, which is itself informative.
 
-### `tls.cipher_preference` — design-only
-Needs `sslscan` (it exposes the cipher list and preference order in one pass). The
-module is a thin parser; it is not written because the parsed output shape needs to
-be pinned per `sslscan` version first.
+### `tls.cipher_preference` — safe
+No external tool: OpenSSL is already a dependency of the interpreter, so pinning a
+cipher string is enough to ask the question. One handshake is attempted per legacy
+suite at TLS 1.2 — RC4, 3DES, NULL, export-grade and four AES-CBC suites — with
+`@SECLEVEL=0` so the local build will even offer them. Eight handshakes, hard cap.
+
+A suite this OpenSSL cannot offer comes back as `unavailable`, never as refused by
+the server: the tool must not report its own limitation as a target property. The
+default handshake records the negotiated suite and protocol; TLS 1.3 suites are
+fixed by the protocol and are not a preference question, which the finding says
+out loud.
 
 ---
 
@@ -129,6 +159,31 @@ Audits `Strict-Transport-Security`, `Content-Security-Policy`, `X-Frame-Options`
 `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`. Missing CSP and
 missing HSTS on an HTTPS origin are `medium`; the rest are `low`/`info`. Reports what
 was present, not a score.
+
+### `web.cors_policy` — passive
+One request with `Origin: https://relift-probe.invalid` (a reserved, unroutable
+name). If `Access-Control-Allow-Origin` echoes it, the policy is not an allowlist.
+The two cases are graded differently because they are different claims:
+
+- echoed **with** `Access-Control-Allow-Credentials: true` — `high`: any site a
+  logged-in visitor opens can read this origin's responses.
+- echoed without credentials — `medium`: unauthenticated reads only.
+- `*` with credentials — `low`: browsers reject the pair, so it is a config smell.
+- `*` without credentials — `info`: intentional on many public sites.
+
+A dynamic policy without `Vary: Origin` adds one `low` finding (shared caches can
+hand one origin's response to another). Checked on the root path only; no preflight
+is sent.
+
+### `web.cookie_flags` — passive
+Reads every `Set-Cookie` on the root path — all of them, not just the last, which is
+why the HTTP client keeps the raw header list — and grades `Secure`, `HttpOnly`,
+`SameSite`, `Domain` scope and whether the cookie is a session cookie. Names that
+look like a session (`session`, `sid`, `auth`, `token`, `jwt`, `remember`, ...) are
+called out separately, because a missing `HttpOnly` on a session cookie is a stolen
+session and on a theme preference it is nothing.
+
+Cookies are parsed, never decoded or replayed. No cookie is sent back to the target.
 
 ### `web.methods` — safe
 `OPTIONS` on the root, plus a `TRACE` probe. Flags declared `PUT`, `DELETE`, `TRACE`
@@ -155,7 +210,8 @@ Requires `--profile lab` and the external-tool profile (`--depth 5`, or
 `include_external` in a plan).
 
 ### `web.sql_injection_check` — intrusive
-Detection only, one operator-named parameter, hard cap of **8 HTTP requests**.
+One operator-named parameter, hard cap of **8 HTTP requests** for detection and
+proof together.
 
 Three probes, in order, stopping as soon as one proves the point:
 
@@ -178,13 +234,62 @@ loops over results. The only inputs are `--sqli-url` and `--sqli-param`, and the
 must be on the authorised target host (`http_get_url` refuses any other host before
 opening a socket).
 
-Evidence: `url`, `param`, `injectable`, `styles`, `dbms_hint`, `requests_sent`,
-`baseline_ms`. A positive result is `critical` with `CWE-89`; a clean result is
-`info` and says the probe set is narrow, not that the parameter is safe.
+Once detection succeeds, a fourth stage proves impact rather than assuming it.
+Four fixed error-based cast payloads (MySQL `EXTRACTVALUE`, MSSQL `CONVERT`,
+PostgreSQL `CAST`, SQLite `CAST`) make the engine print the value it refused — a
+version string. That is a read: the same parameter can return data. The version is
+captured in evidence and in the finding text; **no table, row or schema is read,
+stored or returned**, and the stage stops at the first version token that was not
+already on the baseline page.
 
-### `web.dir_bruteforce` — design-only
-Would need a wordlist, a rate budget and 404-calibration. Three things that are easy
-to get wrong and produce false confidence, so it stays a spec.
+Evidence: `url`, `param`, `injectable`, `styles`, `dbms_hint`, `requests_sent`,
+`baseline_ms`, and `proof_of_impact` (`engine`, `version`, `method`). A positive
+result is `critical` with `CWE-89`; a clean result is `info` and says the probe set
+is narrow, not that the parameter is safe.
+
+### `web.path_traversal` — intrusive
+Same single parameter as the injection probe (`--sqli-url` / `--sqli-param`), six
+fixed payloads, six requests maximum: plain `../` traversal, the `....//` filter
+bypass, URL-encoded and double-encoded slashes, an absolute path, and a
+backslash path for Windows. Only the **marker** of a known file counts —
+`root:x:0:0:` from `/etc/passwd`, `[extensions]` from `win.ini` — and the marker
+is all that is reported. The file is never stored or echoed into the report; the
+point is to prove arbitrary read, not to exfiltrate.
+
+A hit is `critical` with `CWE-22`. A miss is `info` with low confidence: these six
+encodings did not reach a readable file, which is not the same as a safe parameter.
+
+### `web.dir_bruteforce` — intrusive
+A fixed 26-entry list of paths that should never be public: VCS metadata
+(`/.git/HEAD`, `/.svn/entries`), environment and backup files (`/.env`,
+`/backup.sql`, `/wp-config.php.bak`), framework consoles (`/actuator/env`,
+`/server-status`, `/phpmyadmin/`) and a handful of API descriptors. No wordlist, no
+user-supplied path, no recursion — a fixed list is auditable and cannot be pointed
+at a bigger target.
+
+Before probing, two random paths are requested. If both answer `200` with
+near-identical bodies the server returns a soft-404 for everything, and the module
+**aborts** and says so: an uncalibrated soft-404 turns every miss into a confident
+false positive. Total budget is 40 requests, calibration included, and bodies are
+measured, never stored.
+
+A `200` on `/.env` or a database dump is `critical`; VCS metadata, backups and
+compose files are `high`; admin consoles `medium`. A `401`/`403` is reported as
+`low` — "exists, access-controlled", not as exposure. A redirect that only
+normalises a trailing slash (`/admin` → `/admin/`) is framework routing and is
+ignored; a redirect to a different path is reported as `info`.
+
+### `web.open_redirect` — intrusive
+Five fixed payloads aimed at `relift-probe.invalid`, a reserved name that cannot
+be a legitimate destination: absolute, protocol-relative, `////`-prefixed, missing
+trailing slash, and a backslash-encoded form. The `Location` header's hostname has
+to equal that name exactly, so a redirect to another path on the same site is
+routing and stays silent.
+
+A hit is `high` with `CWE-601`: a link on the operator's own domain now lands on an
+attacker's page, which is what makes a phishing link credible. Without
+`--sqli-url`/`--sqli-param` the module returns nothing rather than guessing a
+parameter.
 
 ---
 
@@ -284,6 +389,59 @@ non-loopback listeners → `info`.
 It reports the surface. It never claims an exploit, never runs one, and never
 changes a file. Non-Linux hosts get a single `info` finding saying the collectors
 are not portable.
+
+---
+
+## code
+
+The only family whose target is a directory rather than a host: `relift code PATH`
+reads files that are already on the operator's machine and opens no socket to the
+target. Vendored and generated trees (`.git`, `node_modules`, `vendor`, `.venv`,
+`dist`, `build`, …) are skipped, as are binaries and files over 512 KiB, with a
+5,000-file ceiling.
+
+### `code.secrets` — passive
+A fixed table of credential shapes: AWS access key IDs, GitHub and GitLab tokens,
+Slack tokens, Google API keys, Stripe live keys, private key blocks, JWTs, and
+`password = "…"`-style assignments. Every match is **redacted** to a short prefix
+and suffix before it reaches a finding, the terminal, the JSON artefact or the
+markdown report; the audit log never receives the value either.
+
+Placeholders are filtered out (`changeme`, `example`, `xxxx`, `${VAR}`,
+`os.environ`), as are documented example keys such as AWS's
+`AKIAIOSFODNN7EXAMPLE`, typed-out alphabet runs (`abcdefgh…`), passwd-file lines
+and other data that merely looks like a secret. A real-looking hit is `high` with `CWE-798`, and the detail says where it
+was found — file and line — not what it was.
+
+### `code.dangerous_sinks` — passive
+Patterns where a small bug becomes an exploit: SQL built by concatenation or
+f-string, `subprocess(..., shell=True)`, `os.system`, `eval`/`exec`, `pickle.loads`,
+`yaml.load` without a safe loader, and a few framework-specific raw-query calls.
+
+Every finding says *sink, not vulnerability*: a hit is the place to review data
+flow, not proof that input reaches it. `high` with the matching CWE. Only source
+files are matched — a snippet in a Markdown page or a JSON fixture is documentation,
+not a sink. A tree with no hits produces one `info` finding listing what was
+searched, so a clean result is distinguishable from a scan that did not run.
+
+### `code.dependencies` — passive
+Parses `package.json`, `package-lock.json`, `requirements.txt`, `pyproject.toml`,
+`Cargo.lock`, `go.mod`, `Gemfile.lock`, `composer.lock` and `pom.xml`, and keeps
+**only pinned versions** — a range cannot be matched to an advisory honestly, so
+unpinned requirements are reported separately as `low`.
+
+Pinned packages go to the OSV database in one batch request
+(`https://api.osv.dev/v1/querybatch`, no key, no account). The batch response carries
+ids only, so up to 25 matched advisories are then fetched individually for their
+real severity, summary and fixed version; an advisory whose detail request fails is
+still reported by id rather than dropped. `--no-osv` skips the lookup entirely and
+reports versions only; an unreachable OSV is an `info` finding, never a silent pass.
+
+Severity comes from the advisory's own rating, falling back to its CVSS score, and
+the highest-ranked advisory decides the finding: a package with a critical advisory
+is `critical`, and the detail names each advisory, its fix version where one exists,
+and what it allows. Confidence is `high` because the match is a database lookup
+against an exact version.
 
 ---
 

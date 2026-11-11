@@ -19,12 +19,18 @@ CATEGORY_ORDER = (
     "db",
     "system",
     "auth",
+    "code",
     "analysis",
     "report",
 )
 
-# Every family a technique may be planned against.
-ALL_FAMILIES = ("http", "db", "ssh", "host")
+# Families that describe a reachable host.
+HOST_FAMILIES = ("http", "db", "ssh", "host")
+
+# Every family a technique may be planned against. ``code`` is a separate axis:
+# a codebase has no host, so a technique that applies to any host must not be
+# planned against a directory.
+ALL_FAMILIES = HOST_FAMILIES + ("code",)
 
 _SPECS: tuple[AttackSpec, ...] = (
     # ---------------------------------------------------------------- recon
@@ -33,7 +39,7 @@ _SPECS: tuple[AttackSpec, ...] = (
         name="DNS resolution & address inventory",
         category="recon",
         risk=Risk.PASSIVE,
-        families=ALL_FAMILIES,
+        families=HOST_FAMILIES,
         summary="Resolve A/AAAA records and classify the address space "
                 "(loopback, RFC1918, CGNAT, public).",
         produces=("addresses", "address_class", "cname"),
@@ -95,6 +101,23 @@ _SPECS: tuple[AttackSpec, ...] = (
         mitre="T1590.005",
         notes="Design-only: CT log client not written yet.",
     ),
+    AttackSpec(
+        id="recon.mail_posture",
+        name="Mail posture (SPF / DMARC / MX)",
+        category="recon",
+        risk=Risk.PASSIVE,
+        families=HOST_FAMILIES,
+        summary="Reads the domain's TXT and MX records and grades the spooable-"
+                "sender surface: no SPF, +all, ?all, no DMARC, p=none, and an "
+                "SPF that exceeds the 10-lookup limit. Read-only DNS.",
+        produces=("spf", "spf_all", "dmarc", "dmarc_policy", "mx"),
+        ai_hint="A domain with no SPF or a DMARC p=none can be spoofed by "
+                "anyone with a mail server. That is a real path to a staff "
+                "inbox, not a DNS hygiene nit.",
+        mitre="T1590.004",
+        notes="Two to four resolver queries, none against the target. DKIM "
+              "needs a selector and is not probed.",
+    ),
     # ------------------------------------------------------------------ tls
     AttackSpec(
         id="tls.certificate",
@@ -121,16 +144,21 @@ _SPECS: tuple[AttackSpec, ...] = (
     ),
     AttackSpec(
         id="tls.cipher_preference",
-        name="Cipher suite preference",
+        name="Cipher suite audit",
         category="tls",
         risk=Risk.SAFE,
-        summary="Cipher list and preference order via sslscan.",
-        implemented=False,
-        requires=("sslscan",),
-        produces=("ciphers", "preference"),
-        ai_hint="CBC and RC4 in a modern stack mean an old config or an old library.",
+        summary="Pins one TLS 1.2 handshake per legacy suite (RC4, 3DES, NULL, "
+                "export-grade, AES-CBC) and reports which the server still "
+                "accepts, plus the suite the default handshake negotiates. "
+                "Standard library only — no sslscan needed.",
+        produces=("accepted", "negotiated", "protocol"),
+        ai_hint="CBC and RC4 in a modern stack mean an old config or an old "
+                "library. TLS 1.3 suites are fixed by the protocol and are not "
+                "a preference question.",
         mitre="T1595",
-        notes="Design-only: needs sslscan output parsing pinned per version.",
+        notes="One handshake per suite, hard-capped at eight. Suites this "
+              "OpenSSL build cannot offer are reported as unavailable, never "
+              "as refused by the server.",
     ),
     # ------------------------------------------------------------------ web
     AttackSpec(
@@ -144,6 +172,39 @@ _SPECS: tuple[AttackSpec, ...] = (
         ai_hint="Missing CSP and missing HSTS on an HTTPS origin are the two that "
                 "actually enable something; the rest is hygiene.",
         mitre="T1592.004",
+    ),
+    AttackSpec(
+        id="web.cors_policy",
+        name="CORS policy audit",
+        category="web",
+        risk=Risk.PASSIVE,
+        families=("http",),
+        summary="Sends one request with an Origin header from a reserved "
+                ".invalid name and reads Access-Control-Allow-Origin / "
+                "-Credentials. Flags a policy that reflects any origin, and "
+                "separately the case where it does so with credentials.",
+        produces=("acao", "acac", "reflected", "exploitable"),
+        ai_hint="Reflected origin with credentials means any site a logged-in "
+                "visitor opens can read this origin's responses. Reflected "
+                "without credentials is a much smaller claim — say which one "
+                "you have.",
+        mitre="T1190",
+        notes="Checked on the root path only: one extra request, no preflight.",
+    ),
+    AttackSpec(
+        id="web.cookie_flags",
+        name="Cookie flag audit",
+        category="web",
+        risk=Risk.PASSIVE,
+        summary="Reads every Set-Cookie on the root path and grades Secure, "
+                "HttpOnly, SameSite and Domain scope. Session-looking cookie "
+                "names are called out separately.",
+        produces=("cookies", "insecure_session"),
+        ai_hint="A session cookie without HttpOnly is one XSS away from a "
+                "stolen session; without Secure it is one plaintext request "
+                "away. Those are different fixes.",
+        mitre="T1539",
+        notes="Cookies are parsed, never decoded or replayed.",
     ),
     AttackSpec(
         id="web.methods",
@@ -205,9 +266,11 @@ _SPECS: tuple[AttackSpec, ...] = (
         families=("http",),
         summary="Three bounded probes against one operator-named parameter: an "
                 "error signature, a boolean differential, and one capped time "
-                "delay. Detection only — no UNION, no stacked queries, no data "
-                "extraction, no file or command primitives.",
-        produces=("injectable", "injection_style", "dbms_hint"),
+                "delay. When one fires, the remaining budget is spent on proof of "
+                "impact: an error-based cast that makes the engine print its own "
+                "version. No UNION, no stacked queries, no table reads, no file "
+                "or command primitives.",
+        produces=("injectable", "injection_style", "dbms_hint", "proof_of_impact"),
         ai_hint="Report the parameter and the technique that proved it. Never "
                 "include a payload in the narrative, and never claim a DBMS you "
                 "did not see in an error signature.",
@@ -216,16 +279,41 @@ _SPECS: tuple[AttackSpec, ...] = (
               "user-supplied payload, by design.",
     ),
     AttackSpec(
+        id="web.open_redirect",
+        name="Open redirect proof",
+        category="web",
+        risk=Risk.SAFE,
+        families=("http",),
+        summary="Puts a reserved .invalid URL into the operator-named parameter "
+                "and reads the Location header. Confirmed only when the target "
+                "answers with a redirect to that exact host. Silent unless "
+                "--sqli-url/--sqli-param are supplied.",
+        produces=("param", "location", "confirmed", "payload"),
+        ai_hint="A confirmed open redirect is a phishing primitive against your "
+                "own login page, not a header hygiene issue. Say where it "
+                "redirects to, not just that it redirects.",
+        mitre="T1204.001",
+        notes="Five GET requests, fixed payload list, no other parameter "
+              "touched. A redirect to a path on the same host is not a finding.",
+    ),
+    AttackSpec(
         id="web.dir_bruteforce",
-        name="Directory brute-force",
+        name="Well-known path probe (bounded)",
         category="web",
         risk=Risk.INTRUSIVE,
-        summary="Wordlist enumeration with 404 calibration.",
-        implemented=False,
-        produces=("paths",),
-        ai_hint="Uncalibrated soft-404s produce confident nonsense; verify any hit.",
+        families=("http",),
+        summary="A fixed 26-entry list of paths that should never be public "
+                "(.git/HEAD, .env, backups, actuator, admin consoles), probed "
+                "once each with 404 calibration first. Hard cap of 40 requests. "
+                "Fixed list, no wordlist, no user input.",
+        produces=("paths", "exposed", "status"),
+        ai_hint="A reachable .env or backup is a credential leak, not a "
+                "misconfiguration. A 403 is not exposure — report it as an "
+                "existing but protected path.",
         mitre="T1083",
-        notes="Design-only: needs a wordlist policy and rate budget first.",
+        notes="Intrusive: every request lands in the access log. Aborts when "
+              "the server answers 200 to a random path, because an "
+              "uncalibrated soft-404 turns every miss into a false positive.",
     ),
     # ------------------------------------------------------------------- db
     AttackSpec(
@@ -296,13 +384,86 @@ _SPECS: tuple[AttackSpec, ...] = (
         notes="Reads local configuration only. Takes no action, installs nothing, "
               "and changes no file.",
     ),
+    AttackSpec(
+        id="web.path_traversal",
+        name="Path traversal proof (file read)",
+        category="web",
+        risk=Risk.INTRUSIVE,
+        families=("http",),
+        summary="Fixed traversal payloads against the operator-named parameter, "
+                "looking for the marker line of a system file. A hit is proof "
+                "of arbitrary file read; the file itself is never stored or "
+                "returned in full.",
+        produces=("param", "confirmed", "marker", "payload"),
+        ai_hint="A confirmed traversal is critical: it reads configuration, "
+                "private keys and credentials. Report the marker, never the "
+                "file contents.",
+        mitre="T1005",
+        notes="Intrusive tier: six fixed payloads, lab only. Detection of a "
+              "marker line, not extraction.",
+    ),
+    # ------------------------------------------------------------------ code
+    AttackSpec(
+        id="code.secrets",
+        name="Hardcoded secret scan",
+        category="code",
+        risk=Risk.PASSIVE,
+        families=("code",),
+        summary="Scans the tree for private keys, cloud access keys, API tokens "
+                "and high-signal credential assignments. Values are redacted "
+                "in the report; the finding carries file, line and rule.",
+        produces=("rule", "file", "line", "redacted"),
+        ai_hint="A private key in the tree is the whole incident: it lives in "
+                "every clone and every backup. Name the file and the rotation, "
+                "never the value.",
+        mitre="T1552.001",
+        notes="Read-only, no network. Placeholder values and obvious examples "
+              "are skipped; test fixtures are still reported, with low confidence.",
+    ),
+    AttackSpec(
+        id="code.dangerous_sinks",
+        name="Dangerous code pattern scan",
+        category="code",
+        risk=Risk.PASSIVE,
+        families=("code",),
+        summary="Finds the sinks that turn a small bug into an exploit: SQL built "
+                "by string concatenation, eval/exec, shell=True, pickle, unsafe "
+                "YAML, disabled TLS verification, wildcard CORS and unsafe HTML "
+                "injection.",
+        produces=("rule", "cwe", "file", "line"),
+        ai_hint="A sink is a place a flaw would matter, not a flaw. Pair it with "
+                "the data flow if you can see one, and never call it exploitable "
+                "on its own.",
+        mitre="T1059",
+        notes="Regex and line based: a lead to review, not a proof. Confidence "
+              "is stated per rule.",
+    ),
+    AttackSpec(
+        id="code.dependencies",
+        name="Dependency vulnerability audit (OSV)",
+        category="code",
+        risk=Risk.PASSIVE,
+        families=("code",),
+        summary="Reads package manifests and lockfiles, then asks the OSV "
+                "database once per run which pinned versions have published "
+                "vulnerabilities. Reports CVE identifiers and the first fixed "
+                "version.",
+        produces=("packages", "vulns", "fixed"),
+        ai_hint="A vulnerable transitive dependency is only real if the lockfile "
+                "actually resolves to the affected version. Quote the version "
+                "you saw and the version that fixes it.",
+        mitre="T1195.001",
+        notes="One outbound HTTPS query to api.osv.dev (disable with --no-osv). "
+              "Unpinned ranges are reported as such, because a range cannot be "
+              "matched to an advisory honestly.",
+    ),
     # --------------------------------------------------------------- analysis
     AttackSpec(
         id="analysis.attack_chains",
         name="Attack-thread correlation",
         category="analysis",
         risk=Risk.PASSIVE,
-        families=ALL_FAMILIES,
+        families=HOST_FAMILIES,
         summary="Joins the run's findings into multi-stage attack threads: which "
                 "observation becomes initial access, what it unlocks next, and "
                 "the single control that breaks the path.",
@@ -358,7 +519,7 @@ _SPECS: tuple[AttackSpec, ...] = (
         name="Analyst narrative",
         category="report",
         risk=Risk.PASSIVE,
-        families=ALL_FAMILIES,
+        families=HOST_FAMILIES,
         summary="Executive summary, grouped technical section and a fix-first "
                 "list, from the run's findings. AI when available, rule engine "
                 "otherwise. Never modifies findings.",

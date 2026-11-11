@@ -8,7 +8,7 @@ The engine (catalog, scope, modules, runner, report) has no dependency on the
 ``ai`` package. Removing ``relift.ai`` leaves a fully working scanner.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.4.0"
 __author__ = "Jay"
 __company__ = "Pixelcity"
 __title__ = "Relift"

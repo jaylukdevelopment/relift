@@ -351,6 +351,43 @@ def load_scope(path: str | Path) -> Scope:
     return scope
 
 
+def offline_scope(
+    path: Path,
+    engagement: str = "local codebase",
+    authorized_by: str = "Jay",
+    organization: str = "Pixelcity",
+) -> Scope:
+    """An in-memory scope for techniques that read local files and nothing else.
+
+    A codebase has no host to authorise: possessing the files is the
+    authorisation, and no technique in the ``code`` family opens a socket. The
+    scope still exists so the plan ceiling, the audit record and the run
+    artefact have the same shape as every other run — one shape to read, not
+    two, and no second path around the gate for the techniques that do have a
+    host.
+    """
+    when = _now() + timedelta(hours=24)
+    return Scope(
+        path=Path(path),
+        digest=sha256(f"code:{path}".encode("utf-8", "replace")).hexdigest(),
+        engagement=engagement,
+        authorized_by=authorized_by,
+        organization=organization,
+        expires=when,
+        allowed_raw=["local"],
+        denied_raw=[],
+        max_risk=Risk.SAFE,
+        allow_intrusive=False,
+        allow_wide_ranges=False,
+        # No host is reachable from this scope, so there is no budget to spend.
+        rate_limit_rps=0,
+        ports=(),
+        notes="codebase audit: local files only, no network target",
+        allowed=[],
+        denied=[],
+    )
+
+
 def build_scope_document(
     engagement: str,
     hosts: Iterable[str] = (),
